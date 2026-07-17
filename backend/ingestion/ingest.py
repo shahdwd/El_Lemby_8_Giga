@@ -1,6 +1,7 @@
 """
 Main Ingestion Script — end-to-end pipeline:
-  Load HF datasets → Normalize → Chunk → Embed → Upload to Qdrant + Neo4j
+  Load HF datasets + local canonical .md files → Normalize → Chunk → Embed
+  → Upload to Qdrant + Neo4j
 
 Run from project root:
     python -m backend.ingestion.ingest
@@ -17,6 +18,10 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
 
+# Directory containing the canonical .md law files (one file per law).
+# TODO (Dev A): point this at wherever the canonical files actually live.
+MD_LAWS_DIR = Path("backend/data/laws")
+
 
 def main():
     """Run the full ingestion pipeline."""
@@ -26,7 +31,7 @@ def main():
     logger.info("=" * 60)
 
     # ── Step 1: Load HF Datasets ─────────────────────────────────────
-    logger.info("[1/5] Loading HuggingFace datasets...")
+    logger.info("[1/6] Loading HuggingFace datasets...")
 
     try:
         from datasets import load_dataset
@@ -60,9 +65,9 @@ def main():
         qa_dataset = None
 
     # ── Step 2: Normalize ────────────────────────────────────────────
-    logger.info("[2/5] Normalizing records...")
+    logger.info("[2/6] Normalizing records...")
 
-    from backend.ingestion.normalize import normalize_record
+    from backend.ingestion.normalize import normalize_record, normalize_md_document
 
     all_records = []
 
@@ -78,14 +83,34 @@ def main():
             if normalized and normalized.get("text"):
                 all_records.append(normalized)
 
-    logger.info(f"  Normalized: {len(all_records)} records")
+    logger.info(f"  Normalized (HF datasets): {len(all_records)} records")
+
+    # ── Step 2b: Load + normalize local canonical .md law files ─────
+    logger.info("[2b/6] Loading canonical .md law files...")
+
+    md_records = []
+    if MD_LAWS_DIR.exists():
+        md_files = sorted(MD_LAWS_DIR.glob("*.md"))
+        for md_path in md_files:
+            try:
+                content = md_path.read_text(encoding="utf-8")
+                parsed = normalize_md_document(str(md_path), content)
+                md_records.extend(parsed)
+            except Exception as e:
+                logger.error(f"  Failed to parse {md_path}: {e}")
+        logger.info(f"  Parsed {len(md_files)} md file(s) → {len(md_records)} article records")
+    else:
+        logger.info(f"  {MD_LAWS_DIR} not found — skipping md ingestion")
+
+    all_records.extend(r for r in md_records if r.get("text"))
+    logger.info(f"  Total normalized records (HF + md): {len(all_records)}")
 
     if not all_records:
-        logger.error("  No records to process! Check dataset IDs and field mappings.")
+        logger.error("  No records to process! Check dataset IDs, field mappings, and MD_LAWS_DIR.")
         sys.exit(1)
 
     # ── Step 3: Chunk ────────────────────────────────────────────────
-    logger.info("[3/5] Chunking documents...")
+    logger.info("[3/6] Chunking documents...")
 
     from backend.ingestion.chunker import chunk_all
 
@@ -93,7 +118,7 @@ def main():
     logger.info(f"  Total chunks: {len(all_chunks)}")
 
     # ── Step 4: Embed & Upload to Qdrant ─────────────────────────────
-    logger.info("[4/5] Embedding and uploading to Qdrant...")
+    logger.info("[4/6] Embedding and uploading to Qdrant...")
 
     from backend.config import QDRANT_URL, QDRANT_API_KEY, QDRANT_COLLECTION
     from backend.ingestion.embed import embed_texts
@@ -153,7 +178,7 @@ def main():
         logger.info(f"  Qdrant upload complete: {len(all_chunks)} points")
 
     # ── Step 5: Build Neo4j Graph ────────────────────────────────────
-    logger.info("[5/5] Building Neo4j graph...")
+    logger.info("[5/6] Building Neo4j graph (Law/Article nodes + CONTAINS edges)...")
 
     from backend.config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
 
@@ -203,9 +228,52 @@ def main():
 
             logger.info(f"  Created {article_count} Article nodes with CONTAINS edges")
 
-            # TODO (Dev A — P2): Add cross-reference REFERENCES edges
-            # Parse "as amended by..." or "المعدل بموجب..." text patterns
-            # to create REFERENCES edges between articles
+            # ── Step 6: REFERENCES edges ──────────────────────────────
+            # normalize_md_document() extracts a "references" list per
+            # article (parsed from the "## REFERENCES" section). Each
+            # entry is the *name* of another law (e.g. "القانون المدني")
+            # rather than a specific article id, so we link
+            # Article -[:REFERENCES]-> Law here. If/when article-level
+            # cross-references become available, this can be tightened
+            # to Article -[:REFERENCES]-> Article.
+            logger.info("[6/6] Building REFERENCES edges...")
+            ref_count = 0
+            for record in all_records:
+                refs = record.get("references") or []
+                if not refs or not record.get("article_id"):
+                    continue
+                for ref_law_name in refs:
+                    result = session.run(
+                        """
+                        MATCH (a:Article {article_id: $article_id, law_name: $law_name})
+                        MATCH (target:Law {name: $ref_law_name})
+                        MERGE (a)-[:REFERENCES]->(target)
+                        RETURN a
+                        """,
+                        article_id=record["article_id"],
+                        law_name=record["law_name"],
+                        ref_law_name=ref_law_name,
+                    )
+                    if result.single():
+                        ref_count += 1
+                    else:
+                        # Referenced law isn't itself in the ingested corpus
+                        # (e.g. "هذا القانون" self-references, or a law not
+                        # yet ingested) — create a stub node so the edge
+                        # still carries information for graph traversal.
+                        session.run(
+                            """
+                            MATCH (a:Article {article_id: $article_id, law_name: $law_name})
+                            MERGE (target:Law {name: $ref_law_name})
+                            MERGE (a)-[:REFERENCES]->(target)
+                            """,
+                            article_id=record["article_id"],
+                            law_name=record["law_name"],
+                            ref_law_name=ref_law_name,
+                        )
+                        ref_count += 1
+
+            logger.info(f"  Created {ref_count} REFERENCES edges")
 
         driver.close()
         logger.info("  Neo4j graph build complete")
