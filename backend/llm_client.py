@@ -36,7 +36,7 @@ async def call_llm(
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://el-lemby.vercel.app",
-        "X-Title": "El Lemby — Egyptian Law AI Assistant",
+        "X-Title": "Qanony - Egyptian Law AI Assistant",
     }
 
     payload = {

@@ -83,7 +83,7 @@ export default function Home() {
     setUploadedDoc(null);
     const newSessionId = `session-${Math.random().toString(36).substr(2, 9)}`;
     setSessionId(newSessionId);
-    
+
     // Add to local session history
     setSessions(prev => {
       if (prev.includes(newSessionId)) return prev;
@@ -131,7 +131,7 @@ export default function Home() {
       }
 
       const data = await response.json();
-      
+
       setMessages(prev => [
         ...prev,
         {
@@ -149,8 +149,8 @@ export default function Home() {
         ...prev,
         {
           role: "assistant",
-          content: language === "ar" 
-            ? "عذراً، فشل الاتصال بخادم الخدمة. يرجى التأكد من تشغيل خادم FastAPI على المنفذ 8000." 
+          content: language === "ar"
+            ? "عذراً، فشل الاتصال بخادم الخدمة. يرجى التأكد من تشغيل خادم FastAPI على المنفذ 8000."
             : "Sorry, failed to connect to API server. Please ensure the FastAPI server is running on port 8000.",
           error: true
         }
@@ -229,8 +229,8 @@ export default function Home() {
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "80%" }}>
                   📄 {uploadedDoc.name} ({uploadedDoc.size} KB)
                 </span>
-                <button 
-                  onClick={() => setUploadedDoc(null)} 
+                <button
+                  onClick={() => setUploadedDoc(null)}
                   style={{ background: "transparent", border: "none", color: "var(--error)", cursor: "pointer" }}
                 >
                   ✕
@@ -248,8 +248,8 @@ export default function Home() {
             {language === "ar" ? "الجلسات النشطة" : "Active Sessions"}
           </h3>
           {sessions.map((sess) => (
-            <div 
-              key={sess} 
+            <div
+              key={sess}
               className={`session-item ${sess === sessionId ? "active" : ""}`}
               onClick={() => {
                 setSessionId(sess);
@@ -283,8 +283,8 @@ export default function Home() {
 
           <div className="header-actions">
             {/* Language toggle switch */}
-            <div 
-              className="toggle-lang" 
+            <div
+              className="toggle-lang"
               onClick={() => setLanguage(language === "ar" ? "en" : "ar")}
             >
               <div className={`toggle-lang-item ${language === "ar" ? "active" : ""}`}>العربية</div>
@@ -327,11 +327,11 @@ export default function Home() {
                     {/* Assistant metadata indicators */}
                     {msg.role === "assistant" && !msg.error && (
                       <div style={{ marginTop: "16px", display: "flex", flexDirection: "column", gap: "12px" }}>
-                        
+
                         {/* Badges line */}
                         <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                           {/* Confidence level badge */}
-                          <span 
+                          <span
                             className={`badge badge-confidence-${msg.confidence}`}
                             title={activeTranslation.confidenceTooltip}
                           >
@@ -339,7 +339,7 @@ export default function Home() {
                           </span>
 
                           {/* Grounding outcome badge */}
-                          <span 
+                          <span
                             className={`badge badge-outcome-${msg.outcome}`}
                           >
                             ✅ {activeTranslation.verificationOutcome}: {activeTranslation[msg.outcome]}
@@ -372,14 +372,14 @@ export default function Home() {
 
                         {/* Collapsible citations list */}
                         <div className="citations-box">
-                          <div 
-                            className="citations-header" 
+                          <div
+                            className="citations-header"
                             onClick={() => toggleCitation(index)}
                           >
                             <span>📚 {activeTranslation.citations}</span>
                             <span>{expandedCitations[index] ? "▲" : "▼"}</span>
                           </div>
-                          
+
                           {expandedCitations[index] && (
                             <div className="citations-list">
                               {msg.citations.length === 0 ? (
@@ -434,8 +434,8 @@ export default function Home() {
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={handleKeyDown}
               />
-              <button 
-                type="submit" 
+              <button
+                type="submit"
                 className="btn btn-primary"
                 disabled={isLoading}
               >
