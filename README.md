@@ -1,4 +1,4 @@
-# El Lemby — Egyptian Law AI Assistant (اللمبي)
+# Qanony — Egyptian Law AI Assistant (قانوني)
 
 AI-powered Egyptian legal assistant with grounded citations, graph-based explainability, and confidence scoring.
 

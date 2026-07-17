@@ -68,7 +68,7 @@ class ChatResponseBody(BaseModel):
 @app.get("/health")
 async def health():
     """Health check — used for deployment smoke tests."""
-    return {"status": "ok", "service": "el-lemby"}
+    return {"status": "ok", "service": "qanony"}
 
 
 @app.post("/chat", response_model=ChatResponseBody)

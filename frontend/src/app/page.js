@@ -17,7 +17,7 @@ export default function Home() {
   // Localization keys
   const t = {
     ar: {
-      title: "اللمبي 8 جيجا — مساعد القانون المصري",
+      title: "قانوني — مساعد القانون المصري",
       subtitle: "مستشار ذكي معزز ببحث متجهي ورسم بياني ونظام تدقيق الاقتباسات الفوري.",
       disclaimer: "تنبيه: هذا المساعد يوفر معلومات قانونية استرشادية فقط بناءً على النصوص المسترجعة، ولا يعتبر استشارة قانونية رسمية.",
       placeholder: "اكتب سؤالك القانوني هنا (مثال: ما هي عقوبة السرقة؟)...",
@@ -44,7 +44,7 @@ export default function Home() {
       confidenceTooltip: "يتم احتساب ثقة النظام بناءً على درجة تشابه البحث المتجهي وعدد تطابقات الرسم البياني ونتائج التحقق من الاقتباسات.",
     },
     en: {
-      title: "El Lemby 8 Giga — Egyptian Law Assistant",
+      title: "Qanony — Egyptian Law Assistant",
       subtitle: "Intelligent assistant enhanced with Vector-Graph RAG and deterministic citation safety checks.",
       disclaimer: "Disclaimer: This assistant provides general informational guidance based on retrieved texts. It does not constitute formal legal advice.",
       placeholder: "Type your legal query here (e.g., What is the penalty for theft?)...",
