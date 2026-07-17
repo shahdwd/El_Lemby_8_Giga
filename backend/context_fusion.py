@@ -67,3 +67,15 @@ def fuse_context(retrieval: RetrievalResult, token_budget: int = TOKEN_BUDGET) -
         vector_top_score=retrieval.vector_top_score,
         graph_corroboration_count=retrieval.graph_corroboration_count,
     )
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    print("Testing Context Fusion:")
+    chunk1 = RetrievedChunk(article_id="1", law_name="Law", text="A", score=0.9)
+    chunk2 = RetrievedChunk(article_id="1", law_name="Law", text="B", score=0.8) # Duplicate ID, lower score
+    chunk3 = RetrievedChunk(article_id="2", law_name="Law", text="C", score=0.7)
+    
+    mock_retrieval = RetrievalResult(chunks=[chunk1, chunk2, chunk3], graph_path=[])
+    fused = fuse_context(mock_retrieval, token_budget=10)
+    print(f"Resulting chunks: {[c.article_id for c in fused.chunks]} with scores {[c.score for c in fused.chunks]}")

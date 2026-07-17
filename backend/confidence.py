@@ -73,3 +73,11 @@ def compute_confidence(
                 f"graph_corr={retrieval.graph_corroboration_count}, "
                 f"citation={citation_outcome.value})")
     return level
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    print("Testing Confidence Check:")
+    mock_retrieval = RetrievalResult(chunks=[], graph_path=[], vector_top_score=0.8, graph_corroboration_count=2)
+    conf = compute_confidence(mock_retrieval, CitationCheckOutcome.PASSED)
+    print(f"Calculated Confidence: {conf.value} (Expected: high)")

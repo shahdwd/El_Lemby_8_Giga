@@ -118,3 +118,17 @@ async def generate_response(
     response = await call_llm(messages, temperature=0.3, max_tokens=2048)
     logger.info(f"[response_generator] generated {len(response)} chars (retry={is_retry})")
     return response
+
+
+if __name__ == "__main__":
+    import asyncio
+    logging.basicConfig(level=logging.INFO)
+    async def test():
+        from backend.models import RetrievedChunk
+        print("Testing Response Generator:")
+        chunk = RetrievedChunk(article_id="318", law_name="قانون العقوبات", text="يعاقب بالحبس مع الشغل مدة لا تتجاوز سنتين...", score=0.9)
+        mock_retrieval = RetrievalResult(chunks=[chunk], graph_path=[])
+        res = await generate_response("ما هي عقوبة السرقة؟", mock_retrieval)
+        print("Generated response:")
+        print(res)
+    asyncio.run(test())

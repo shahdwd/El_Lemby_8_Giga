@@ -157,3 +157,16 @@ def determine_outcome(
     if not ungrounded:
         return CitationCheckOutcome.PASSED
     return CitationCheckOutcome.FALLBACK  # will be updated by pipeline logic
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    print("Testing Citation Check:")
+    response_text = "وفقاً للمادة 318 من قانون العقوبات، يعاقب السارق بالحبس."
+    chunk = RetrievedChunk(article_id="318", law_name="قانون العقوبات", text="يعاقب بالحبس مع الشغل...", score=0.9)
+    mock_retrieval = RetrievalResult(chunks=[chunk], graph_path=[])
+    
+    extracted, grounded, ungrounded = check_citations(response_text, mock_retrieval)
+    print(f"Extracted: {len(extracted)}, Grounded: {len(grounded)}, Ungrounded: {len(ungrounded)}")
+    outcome = determine_outcome(extracted, grounded, ungrounded)
+    print(f"Outcome: {outcome.value}")

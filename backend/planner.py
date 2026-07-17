@@ -66,3 +66,15 @@ async def classify_intent(message: str, has_document: bool = False) -> Intent:
     except Exception as e:
         logger.error(f"[planner] classification failed: {e}, defaulting to qa")
         return Intent.QA
+
+
+if __name__ == "__main__":
+    import asyncio
+    logging.basicConfig(level=logging.INFO)
+    async def test():
+        print("Testing Planner:")
+        res1 = await classify_intent("ما هي عقوبة السرقة؟")
+        print(f"Result 1 (QA expected): {res1}")
+        res2 = await classify_intent("What is this document about?", has_document=True)
+        print(f"Result 2 (Doc Explanation expected): {res2}")
+    asyncio.run(test())

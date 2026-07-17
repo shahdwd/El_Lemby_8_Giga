@@ -47,3 +47,16 @@ async def ensure_arabic_query(query: str) -> tuple[str, bool]:
         return query, False
     translated = await translate_to_arabic(query)
     return translated, True
+
+
+if __name__ == "__main__":
+    import asyncio
+    logging.basicConfig(level=logging.INFO)
+    async def test():
+        print("Testing Translator:")
+        ar_res, was_translated_1 = await ensure_arabic_query("ما عقوبة السرقة")
+        print(f"Arabic input -> Output: '{ar_res}', Translated: {was_translated_1}")
+        
+        en_res, was_translated_2 = await ensure_arabic_query("What is the penalty for theft in Egypt?")
+        print(f"English input -> Output: '{en_res}', Translated: {was_translated_2}")
+    asyncio.run(test())

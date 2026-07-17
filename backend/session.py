@@ -55,3 +55,14 @@ class SessionStore:
 
 # Singleton instance — imported by other modules
 session_store = SessionStore()
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    print("Testing Session Store:")
+    store = SessionStore()
+    store.add_turn("session-1", "user", "Hello")
+    store.add_turn("session-1", "assistant", "Hi")
+    history = store.get_history_for_prompt("session-1")
+    print(f"History for session-1: {history}")
+    print(f"Active sessions: {store.list_sessions()}")
