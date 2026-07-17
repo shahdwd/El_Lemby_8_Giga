@@ -190,93 +190,80 @@ def main():
 
         driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
 
-        with driver.session() as session:
-            # Clear existing data
-            session.run("MATCH (n) DETACH DELETE n")
-            logger.info("  Cleared existing graph data")
+        try:
+            with driver.session() as session:
+                # 1. Clear existing data
+                session.run("MATCH (n) DETACH DELETE n")
+                logger.info("  Cleared existing Neo4j graph data")
 
-            # Create Law nodes
-            laws = set(r["law_name"] for r in all_records if r["law_name"])
-            for law_name in laws:
-                session.run(
-                    "CREATE (l:Law {name: $name})",
-                    name=law_name,
-                )
-            logger.info(f"  Created {len(laws)} Law nodes")
+                # 2. Create Law nodes
+                logger.info("  Importing Law nodes...")
+                laws = list(set(r["law_name"] for r in all_records if r.get("law_name")))
+                law_query = """
+                UNWIND $laws AS law_name
+                MERGE (l:Law {name: law_name})
+                """
+                session.run(law_query, laws=laws)
+                logger.info(f"  Created {len(laws)} Law nodes")
 
-            # Create Article nodes with CONTAINS edges
-            article_count = 0
-            for record in all_records:
-                if record["law_name"] and record["article_id"]:
-                    session.run(
-                        """
-                        MATCH (l:Law {name: $law_name})
-                        CREATE (a:Article {
-                            article_id: $article_id,
-                            law_name: $law_name,
-                            text: $text,
-                            categories: $categories
+                # 3. Create Article nodes and CONTAINS edges in batches
+                logger.info("  Importing Article nodes and CONTAINS edges...")
+                batch_size = 1000
+                articles_payload = [
+                    {
+                        "law_name": r["law_name"],
+                        "article_id": r["article_id"],
+                        "text": r["text"][:500],  # store first 500 chars in graph
+                        "categories": r["categories"]
+                    }
+                    for r in all_records if r.get("law_name") and r.get("article_id")
+                ]
+
+                article_query = """
+                UNWIND $rows AS row
+                MATCH (l:Law {name: row.law_name})
+                MERGE (a:Article {article_id: row.article_id, law_name: row.law_name})
+                SET a.text = row.text,
+                    a.categories = row.categories
+                MERGE (l)-[:CONTAINS]->(a)
+                """
+
+                for i in range(0, len(articles_payload), batch_size):
+                    batch = articles_payload[i:i + batch_size]
+                    session.run(article_query, rows=batch)
+                    logger.info(f"  Created Articles batch {i // batch_size + 1} ({len(batch)} nodes)")
+
+                # ── Step 6: REFERENCES edges ──────────────────────────────
+                logger.info("[6/6] Building REFERENCES edges...")
+                refs_payload = []
+                for r in all_records:
+                    refs = r.get("references") or []
+                    if not refs or not r.get("article_id") or not r.get("law_name"):
+                        continue
+                    for ref_law_name in refs:
+                        refs_payload.append({
+                            "law_name": r["law_name"],
+                            "article_id": r["article_id"],
+                            "target_law_name": ref_law_name
                         })
-                        CREATE (l)-[:CONTAINS]->(a)
-                        """,
-                        law_name=record["law_name"],
-                        article_id=record["article_id"],
-                        text=record["text"][:500],  # store first 500 chars in graph
-                        categories=record["categories"],
-                    )
-                    article_count += 1
 
-            logger.info(f"  Created {article_count} Article nodes with CONTAINS edges")
+                ref_query = """
+                UNWIND $refs AS ref
+                MATCH (a:Article {article_id: ref.article_id, law_name: ref.law_name})
+                MERGE (target:Law {name: ref.target_law_name})
+                MERGE (a)-[:REFERENCES]->(target)
+                """
 
-            # ── Step 6: REFERENCES edges ──────────────────────────────
-            # normalize_md_document() extracts a "references" list per
-            # article (parsed from the "## REFERENCES" section). Each
-            # entry is the *name* of another law (e.g. "القانون المدني")
-            # rather than a specific article id, so we link
-            # Article -[:REFERENCES]-> Law here. If/when article-level
-            # cross-references become available, this can be tightened
-            # to Article -[:REFERENCES]-> Article.
-            logger.info("[6/6] Building REFERENCES edges...")
-            ref_count = 0
-            for record in all_records:
-                refs = record.get("references") or []
-                if not refs or not record.get("article_id"):
-                    continue
-                for ref_law_name in refs:
-                    result = session.run(
-                        """
-                        MATCH (a:Article {article_id: $article_id, law_name: $law_name})
-                        MATCH (target:Law {name: $ref_law_name})
-                        MERGE (a)-[:REFERENCES]->(target)
-                        RETURN a
-                        """,
-                        article_id=record["article_id"],
-                        law_name=record["law_name"],
-                        ref_law_name=ref_law_name,
-                    )
-                    if result.single():
-                        ref_count += 1
-                    else:
-                        # Referenced law isn't itself in the ingested corpus
-                        # (e.g. "هذا القانون" self-references, or a law not
-                        # yet ingested) — create a stub node so the edge
-                        # still carries information for graph traversal.
-                        session.run(
-                            """
-                            MATCH (a:Article {article_id: $article_id, law_name: $law_name})
-                            MERGE (target:Law {name: $ref_law_name})
-                            MERGE (a)-[:REFERENCES]->(target)
-                            """,
-                            article_id=record["article_id"],
-                            law_name=record["law_name"],
-                            ref_law_name=ref_law_name,
-                        )
-                        ref_count += 1
+                for i in range(0, len(refs_payload), batch_size):
+                    batch = refs_payload[i:i + batch_size]
+                    session.run(ref_query, refs=batch)
+                    logger.info(f"  Created REFERENCES batch {i // batch_size + 1} ({len(batch)} edges)")
 
-            logger.info(f"  Created {ref_count} REFERENCES edges")
-
-        driver.close()
-        logger.info("  Neo4j graph build complete")
+        except Exception as e:
+            logger.error(f"  Neo4j graph build failed: {e}")
+        finally:
+            driver.close()
+            logger.info("  Neo4j graph build complete")
 
     # ── Done ─────────────────────────────────────────────────────────
     logger.info("=" * 60)
