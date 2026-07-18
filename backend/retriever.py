@@ -5,7 +5,7 @@ Dev A will replace the mock implementations with real Qdrant/Neo4j queries.
 """
 
 import logging
-from backend.config import (
+from config import (
     QDRANT_URL,
     QDRANT_API_KEY,
     QDRANT_COLLECTION,
@@ -15,7 +15,7 @@ from backend.config import (
     RETRIEVAL_TOP_K,
     EMBEDDING_MODEL,
 )
-from backend.models import RetrievedChunk, RetrievalResult, GraphPathNode
+from models import RetrievedChunk, RetrievalResult, GraphPathNode
 
 logger = logging.getLogger(__name__)
 

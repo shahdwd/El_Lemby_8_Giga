@@ -4,8 +4,8 @@ Single LLM call: retrieved context in → cited, grounded answer out.
 """
 
 import logging
-from backend.llm_client import call_llm
-from backend.models import RetrievalResult
+from llm_client import call_llm
+from models import RetrievalResult
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ if __name__ == "__main__":
     import asyncio
     logging.basicConfig(level=logging.INFO)
     async def test():
-        from backend.models import RetrievedChunk
+        from models import RetrievedChunk
         print("Testing Response Generator:")
         chunk = RetrievedChunk(article_id="318", law_name="قانون العقوبات", text="يعاقب بالحبس مع الشغل مدة لا تتجاوز سنتين...", score=0.9)
         mock_retrieval = RetrievalResult(chunks=[chunk], graph_path=[])

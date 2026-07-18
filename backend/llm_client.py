@@ -5,7 +5,7 @@ Supports both the main model (reasoning/response) and cheap model (planner/trans
 
 import httpx
 import logging
-from backend.config import OPENROUTER_API_KEY, LLM_MODEL, LLM_MODEL_CHEAP
+from config import OPENROUTER_API_KEY, LLM_MODEL, LLM_MODEL_CHEAP
 
 logger = logging.getLogger(__name__)
 

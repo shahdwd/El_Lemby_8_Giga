@@ -4,7 +4,7 @@ Outputs a 3-tier label: High / Medium / Low.
 """
 
 import logging
-from backend.models import (
+from models import (
     RetrievalResult,
     CitationCheckOutcome,
     ConfidenceLevel,

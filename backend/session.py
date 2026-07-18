@@ -4,8 +4,8 @@ Session-scoped, last N turns, passed directly into the LLM context window.
 No vector memory store, no summarization layer.
 """
 
-from backend.models import Session, Turn
-from backend.config import SESSION_MAX_TURNS
+from models import Session, Turn
+from config import SESSION_MAX_TURNS
 import logging
 
 logger = logging.getLogger(__name__)
