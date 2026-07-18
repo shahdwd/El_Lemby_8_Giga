@@ -60,7 +60,7 @@ async def handle_chat(message: str, session_id: str, language: str = "ar") -> Ch
         logger.info(f"[pipeline] translated query to Arabic")
 
     # ── 3. Retrieval ─────────────────────────────────────────────────
-    raw_retrieval = await retrieve(arabic_query)
+    raw_retrieval = await retrieve(arabic_query, intent)
     logger.info(f"[pipeline] retrieved {len(raw_retrieval.chunks)} raw chunks")
 
     # ── 4. Context Fusion ────────────────────────────────────────────

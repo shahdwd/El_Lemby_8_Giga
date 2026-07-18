@@ -15,7 +15,7 @@ from backend.config import (
     RETRIEVAL_TOP_K,
     EMBEDDING_MODEL,
 )
-from backend.models import RetrievedChunk, RetrievalResult, GraphPathNode
+from backend.models import RetrievedChunk, RetrievalResult, GraphPathNode, Intent
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,66 @@ def _embed_query(query: str) -> list[float]:
     model = _get_embedding_model()
     embedding = model.encode(query, normalize_embeddings=True)
     return embedding.tolist()
+
+
+def _graph_seed_clause(has_article_ids: bool) -> str:
+    """Build the seed predicate for the graph query."""
+    if has_article_ids:
+        return "a.article_id IN $article_ids"
+
+    return (
+        "toLower(a.text) CONTAINS toLower($query) "
+        "OR toLower(a.law_name) CONTAINS toLower($query) "
+        "OR toLower(a.article_id) = toLower($query)"
+    )
+
+
+def _graph_query_for_intent(intent: Intent, has_article_ids: bool) -> str:
+    """Return the Cypher query shape best suited to the current intent."""
+    seed_clause = _graph_seed_clause(has_article_ids)
+
+    if intent == Intent.DOCUMENT_EXPLANATION:
+        return f"""
+        MATCH (a:Article)
+        WHERE {seed_clause}
+        MATCH path = (a)<-[:CONTAINS]-(law:Law)-[:CONTAINS]->(related:Article)
+        RETURN a, related, path
+        UNION
+        MATCH (a:Article)
+        WHERE {seed_clause}
+        MATCH path = (a)-[:REFERENCES]->(ref_law:Law)<-[:CONTAINS]-(related:Article)
+        RETURN a, related, path
+        LIMIT 10
+        """
+
+    if intent == Intent.CASE_GUIDANCE:
+        return f"""
+        MATCH (a:Article)
+        WHERE {seed_clause}
+        MATCH path = (a)-[:IMPOSES|GRANTS|PRESCRIBES|EMPOWERS|MENTIONS]->(entity:SemanticEntity)
+                      <-[:IMPOSES|GRANTS|PRESCRIBES|EMPOWERS|MENTIONS]-(related:Article)
+        RETURN a, related, path
+        UNION
+        MATCH (a:Article)
+        WHERE {seed_clause}
+        MATCH path = (a)-[:REFERENCES]->(ref_law:Law)<-[:CONTAINS]-(related:Article)
+        RETURN a, related, path
+        LIMIT 10
+        """
+
+    return f"""
+    MATCH (a:Article)
+    WHERE {seed_clause}
+    MATCH path = (a)-[:REFERENCES]->(ref_law:Law)<-[:CONTAINS]-(related:Article)
+    RETURN a, related, path
+    UNION
+    MATCH (a:Article)
+    WHERE {seed_clause}
+    MATCH path = (a)-[:IMPOSES|GRANTS|PRESCRIBES|EMPOWERS|MENTIONS]->(entity:SemanticEntity)
+                  <-[:IMPOSES|GRANTS|PRESCRIBES|EMPOWERS|MENTIONS]-(related:Article)
+    RETURN a, related, path
+    LIMIT 10
+    """
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -116,7 +176,7 @@ async def vector_search(query: str, top_k: int = RETRIEVAL_TOP_K) -> list[Retrie
 # GRAPH SEARCH (Neo4j)
 # ═══════════════════════════════════════════════════════════════════════════
 
-async def graph_search(query: str, article_ids: list[str] | None = None) -> tuple[list[RetrievedChunk], list[GraphPathNode]]:
+async def graph_search(query: str, article_ids: list[str] | None = None, intent: Intent | None = None) -> tuple[list[RetrievedChunk], list[GraphPathNode]]:
     """
     Search Neo4j for related articles and graph traversal path.
     Dev A: Replace the mock with real Cypher queries.
@@ -124,11 +184,17 @@ async def graph_search(query: str, article_ids: list[str] | None = None) -> tupl
     Args:
         query: The user's query (for keyword matching).
         article_ids: Article IDs from vector search (for graph expansion).
+        intent: The classified intent (for filtering and context).
 
     Returns:
         (related_chunks, graph_path)
     """
     driver = _get_neo4j_driver()
+    normalized_intent = intent or Intent.QA
+
+    if normalized_intent == Intent.OFF_TOPIC:
+        logger.info("[retriever] off_topic intent — skipping Neo4j search")
+        return [], []
 
     if driver is None:
         logger.warning("[retriever] Neo4j not configured — returning mock data")
@@ -138,24 +204,25 @@ async def graph_search(query: str, article_ids: list[str] | None = None) -> tupl
     try:
         chunks = []
         graph_path = []
+        seen_chunk_ids = set()
+        seen_path_nodes = set()
+
+        graph_query = _graph_query_for_intent(normalized_intent, bool(article_ids))
+        query_params = {
+            "query": query,
+            "article_ids": article_ids or [],
+        }
 
         with driver.session() as session:
-            # If we have article IDs from vector search, expand via graph
-            if article_ids:
-                result = session.run(
-                    """
-                    MATCH (a:Article)
-                    WHERE a.article_id IN $article_ids
-                    OPTIONAL MATCH path = (a)-[r:CONTAINS|REFERENCES*1..2]-(related:Article)
-                    RETURN a, related, r, path
-                    LIMIT 10
-                    """,
-                    article_ids=article_ids,
-                )
+            result = session.run(graph_query, **query_params)
 
-                for record in result:
-                    article = record.get("related") or record.get("a")
-                    if article:
+            for record in result:
+                article = record.get("related") or record.get("a")
+                if article:
+                    article_id = article.get("article_id", "")
+                    if not article_id or article_id not in seen_chunk_ids:
+                        if article_id:
+                            seen_chunk_ids.add(article_id)
                         chunks.append(RetrievedChunk(
                             text=article.get("text", ""),
                             law_name=article.get("law_name", ""),
@@ -165,19 +232,23 @@ async def graph_search(query: str, article_ids: list[str] | None = None) -> tupl
                             score=0.5,  # graph hits don't have similarity scores
                         ))
 
-                    # Build graph path from traversal
-                    if record.get("path"):
-                        for node in record["path"].nodes:
-                            graph_path.append(GraphPathNode(
-                                node_id=str(node.element_id),
-                                label=list(node.labels)[0] if node.labels else "Unknown",
-                                name=node.get("name", node.get("article_id", "")),
-                                relationship="",
-                            ))
+                # Build graph path from traversal
+                if record.get("path"):
+                    for node in record["path"].nodes:
+                        node_id = str(node.element_id)
+                        if node_id in seen_path_nodes:
+                            continue
+                        seen_path_nodes.add(node_id)
+                        graph_path.append(GraphPathNode(
+                            node_id=node_id,
+                            label=list(node.labels)[0] if node.labels else "Unknown",
+                            name=node.get("name", node.get("article_id", "")),
+                            relationship="",
+                        ))
 
-            # Add relationship labels to graph path
-            for i in range(len(graph_path) - 1):
-                graph_path[i].relationship = "RELATED_TO"
+        # Add relationship labels to graph path
+        for i in range(len(graph_path) - 1):
+            graph_path[i].relationship = "RELATED_TO"
 
         logger.info(f"[retriever] Neo4j returned {len(chunks)} chunks, {len(graph_path)} path nodes")
         return chunks, graph_path
@@ -191,17 +262,21 @@ async def graph_search(query: str, article_ids: list[str] | None = None) -> tupl
 # COMBINED RETRIEVAL
 # ═══════════════════════════════════════════════════════════════════════════
 
-async def retrieve(query: str) -> RetrievalResult:
+async def retrieve(query: str, intent: Intent) -> RetrievalResult:
     """
     Run both vector and graph search, combine results.
     This is the main entry point — the rest of the pipeline calls this.
     """
+    if intent == Intent.OFF_TOPIC:
+        logger.info("[retriever] off_topic intent — returning empty retrieval")
+        return RetrievalResult()
+
     # Step 1: Vector search
     vector_chunks = await vector_search(query)
 
     # Step 2: Graph search (using article IDs from vector search for expansion)
     vector_article_ids = list(set(c.article_id for c in vector_chunks if c.article_id))
-    graph_chunks, graph_path = await graph_search(query, article_ids=vector_article_ids)
+    graph_chunks, graph_path = await graph_search(query, article_ids=vector_article_ids, intent=intent)
 
     # Step 3: Compute corroboration (how many graph hits overlap with vector hits)
     vector_ids = set(c.article_id for c in vector_chunks)
