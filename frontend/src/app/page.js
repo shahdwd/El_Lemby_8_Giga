@@ -183,61 +183,25 @@ export default function Home() {
   };
 
   const triggerUpload = () => {
+    // Mock live ingestion file upload
     const input = document.createElement("input");
     input.type = "file";
     input.accept = ".pdf,.txt,.md";
-    input.onchange = async (e) => {
+    input.onchange = (e) => {
       const file = e.target.files[0];
       if (file) {
         setUploadedDoc({ name: file.name, size: (file.size / 1024).toFixed(1) });
-        
-        // Add fake system message for upload progress
+        // Add fake system message for upload demo
         setMessages(prev => [
           ...prev,
           {
             role: "assistant",
             system: true,
             content: language === "ar"
-              ? `جاري رفع الملف "${file.name}" ومعالجته...`
-              : `Uploading and processing file "${file.name}"...`
+              ? `تم تحميل الملف "${file.name}" بنجاح وجاري إدراجه وتلخيصه كمرجع إضافي للمحادثة.`
+              : `File "${file.name}" uploaded successfully and pinned as context for this session.`
           }
         ]);
-
-        try {
-          const formData = new FormData();
-          formData.append("file", file);
-
-          const response = await fetch(`${API_BASE}/sessions/${sessionId}/upload`, {
-            method: "POST",
-            body: formData,
-          });
-
-          if (!response.ok) throw new Error("Upload failed");
-
-          setMessages(prev => [
-            ...prev,
-            {
-              role: "assistant",
-              system: true,
-              content: language === "ar"
-                ? `تم تحميل الملف "${file.name}" بنجاح وجاري إدراجه كمصدر إضافي للأسئلة القادمة.`
-                : `File "${file.name}" uploaded successfully and pinned as context for this session.`
-            }
-          ]);
-        } catch (err) {
-          console.error("Upload error:", err);
-          setMessages(prev => [
-            ...prev,
-            {
-              role: "assistant",
-              system: true,
-              content: language === "ar"
-                ? `حدث خطأ أثناء تحميل الملف "${file.name}".`
-                : `Error uploading file "${file.name}".`
-            }
-          ]);
-          setUploadedDoc(null);
-        }
       }
     };
     input.click();

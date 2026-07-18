@@ -4,8 +4,8 @@ Owned by Dev A.
 """
 
 import logging
-from config import TOKEN_BUDGET
-from models import RetrievalResult, RetrievedChunk
+from .config import TOKEN_BUDGET
+from .models import RetrievalResult, RetrievedChunk
 
 logger = logging.getLogger(__name__)
 

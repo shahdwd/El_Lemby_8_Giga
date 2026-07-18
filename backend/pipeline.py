@@ -8,26 +8,24 @@ This replaces LangGraph with a simple, linear, debuggable pipeline.
 """
 
 import logging
-from models import (
+from backend.models import (
     ChatResponse,
     Citation,
     ConfidenceLevel,
     CitationCheckOutcome,
 )
-from planner import classify_intent
-from translation import ensure_arabic_query
-from retriever import retrieve
-from context_fusion import fuse_context
-from response_generator import generate_response
-from citation_check import (
+from backend.planner import classify_intent
+from backend.translation import ensure_arabic_query
+from backend.retriever import retrieve
+from backend.context_fusion import fuse_context
+from backend.response_generator import generate_response
+from backend.citation_check import (
     check_citations,
     strip_ungrounded_claims,
     extract_citations_from_response,
 )
 from backend.confidence import compute_confidence
 from backend.session import session_store
-from models import Intent
-
 
 logger = logging.getLogger(__name__)
 
@@ -50,63 +48,33 @@ async def handle_chat(message: str, session_id: str, language: str = "ar") -> Ch
 
     logger.info(f"[pipeline] START session={session_id} lang={language}")
 
-    # ── 1. Planner + Translation (Parallel) ──────────────────────────
-    import asyncio
+    # ── 1. Planner ───────────────────────────────────────────────────
     session = session_store.get_or_create(session_id)
     has_document = session.pinned_document is not None
-    
-    intent_task = classify_intent(message, has_document=has_document)
-    translation_task = ensure_arabic_query(message)
-    
-    intent, (arabic_query, was_translated) = await asyncio.gather(intent_task, translation_task)
-    
+    intent = await classify_intent(message, has_document=has_document)
     logger.info(f"[pipeline] intent={intent.value}")
+
+    # ── 2. Translation ───────────────────────────────────────────────
+    arabic_query, was_translated = await ensure_arabic_query(message)
     if was_translated:
         logger.info(f"[pipeline] translated query to Arabic")
 
-    # ── 2. Intent-Specific Branching ─────────────────────────────────
-    if intent == Intent.OFF_TOPIC:
-        logger.info("[pipeline] intent is OFF_TOPIC; returning polite refusal")
-        response_text = (
-            "عذراً، هذا السؤال خارج نطاق القانون المصري. يرجى طرح سؤال قانوني." 
-            if language == "ar" 
-            else "Sorry, this question is outside the scope of Egyptian law. Please ask a legal question."
-        )
-        session_store.add_turn(session_id, "user", message)
-        session_store.add_turn(session_id, "assistant", response_text)
-        return ChatResponse(
-            answer=response_text,
-            citations=[],
-            graph_path=[],
-            confidence=ConfidenceLevel.HIGH,
-            citation_check_outcome=CitationCheckOutcome.PASSED,
-            session_id=session_id,
-            language=language,
-        )
-
-    if intent == Intent.DOCUMENT_EXPLANATION and has_document:
-        logger.info("[pipeline] intent is DOCUMENT_EXPLANATION with pinned document; skipping retrieval")
-        from backend.models import RetrievalResult
-        raw_retrieval = RetrievalResult()
-    else:
-        # ── 3. Retrieval ─────────────────────────────────────────────────
-        raw_retrieval = await retrieve(arabic_query)
-        logger.info(f"[pipeline] retrieved {len(raw_retrieval.chunks)} raw chunks")
+    # ── 3. Retrieval ─────────────────────────────────────────────────
+    raw_retrieval = await retrieve(arabic_query)
+    logger.info(f"[pipeline] retrieved {len(raw_retrieval.chunks)} raw chunks")
 
     # ── 4. Context Fusion ────────────────────────────────────────────
     fused = fuse_context(raw_retrieval)
     logger.info(f"[pipeline] fused to {len(fused.chunks)} chunks")
 
-    # ── 5. Response Generation ───────────────────────────────────────
+    # ── 5. Legal Reasoning + Response Generation ─────────────────────
     history = session_store.get_history_for_prompt(session_id)
     response_text = await generate_response(
-        query=arabic_query,
+        query=message,
         retrieval=fused,
         language=language,
         history=history if history else None,
         pinned_document=session.pinned_document,
-        is_retry=False,
-        intent=intent,
     )
 
     # ── 6. Citation Check ────────────────────────────────────────────
@@ -129,13 +97,12 @@ async def handle_chat(message: str, session_id: str, language: str = "ar") -> Ch
             # ── Step 2: Regenerate once with stricter prompt ─────────
             logger.info("[pipeline] citation check: regenerating with stricter prompt")
             response_text = await generate_response(
-                query=arabic_query,
+                query=message,
                 retrieval=fused,
                 language=language,
                 history=history if history else None,
                 pinned_document=session.pinned_document,
                 is_retry=True,
-                intent=intent,
             )
             all_citations, grounded, ungrounded = check_citations(response_text, fused)
 

@@ -4,8 +4,8 @@ Single LLM call: retrieved context in → cited, grounded answer out.
 """
 
 import logging
-from llm_client import call_llm
-from models import RetrievalResult
+from .llm_client import call_llm
+from .models import RetrievalResult
 
 logger = logging.getLogger(__name__)
 
@@ -17,10 +17,17 @@ def build_response_prompt(
     history: list[dict] | None = None,
     pinned_document: str | None = None,
     is_retry: bool = False,
-    intent: Intent = Intent.QA,
 ) -> list[dict]:
     """
     Build the full prompt for the merged reasoning + response LLM call.
+
+    Args:
+        query: The user's question (in original language).
+        retrieval: The retrieval result with chunks and graph path.
+        language: Response language ("ar" or "en").
+        history: Conversation history as list of {"role", "content"} dicts.
+        pinned_document: Content of uploaded document, if any.
+        is_retry: If True, uses a stricter prompt (for citation check retry).
     """
     # Format retrieved chunks as context
     context_lines = []
@@ -54,20 +61,9 @@ def build_response_prompt(
         else "Respond in English."
     )
 
-    intent_instruction = ""
-    if intent == Intent.CASE_GUIDANCE:
-        intent_instruction = "The user is asking for procedural case guidance. Focus your answer on practical legal steps, timelines, and court procedures based on the context."
-    elif intent == Intent.DOCUMENT_EXPLANATION:
-        intent_instruction = "The user wants an explanation of the uploaded document. Focus heavily on summarizing and explaining the legal implications of the uploaded document."
-    else:
-        intent_instruction = "The user is asking a general legal question. Provide a direct, authoritative answer."
-
     system_prompt = f"""أنت مساعد قانوني مصري متخصص. مهمتك هي الإجابة على الأسئلة القانونية بناءً على السياق المسترجع فقط.
 
 You are a specialized Egyptian legal assistant. Your task is to answer legal questions based ONLY on the retrieved context.
-
-## Intent context:
-{intent_instruction}
 
 ## Rules:
 1. ONLY cite articles that appear in the context below — do NOT invent or hallucinate citations.
@@ -103,10 +99,12 @@ async def generate_response(
     history: list[dict] | None = None,
     pinned_document: str | None = None,
     is_retry: bool = False,
-    intent: Intent = Intent.QA,
 ) -> str:
     """
     Generate a legal response using the merged reasoning + response call.
+
+    Returns:
+        The LLM's response text.
     """
     messages = build_response_prompt(
         query=query,
@@ -115,7 +113,6 @@ async def generate_response(
         history=history,
         pinned_document=pinned_document,
         is_retry=is_retry,
-        intent=intent,
     )
 
     response = await call_llm(messages, temperature=0.3, max_tokens=2048)

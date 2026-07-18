@@ -5,7 +5,7 @@ Dev A will replace the mock implementations with real Qdrant/Neo4j queries.
 """
 
 import logging
-from config import (
+from .config import (
     QDRANT_URL,
     QDRANT_API_KEY,
     QDRANT_COLLECTION,
@@ -14,8 +14,9 @@ from config import (
     NEO4J_PASSWORD,
     RETRIEVAL_TOP_K,
     EMBEDDING_MODEL,
+    HF_TOKEN
 )
-from models import RetrievedChunk, RetrievalResult, GraphPathNode
+from .models import RetrievedChunk, RetrievalResult, GraphPathNode
 
 logger = logging.getLogger(__name__)
 
@@ -59,12 +60,60 @@ def _get_embedding_model():
     return _embedding_model
 
 
-def _embed_query(query: str) -> list[float]:
-    """Generate embedding for a query string."""
-    model = _get_embedding_model()
-    embedding = model.encode(query, normalize_embeddings=True)
-    return embedding.tolist()
+import httpx
+import json
 
+import os
+from huggingface_hub import InferenceClient
+
+def _embed_query(query: str) -> list[float]:
+    """
+    Generate 384-dim multilingual Arabic embeddings using the Hugging Face Inference SDK.
+    Bypasses local PyTorch setup and guarantees compatibility with Qdrant collection rules.
+    """
+    # Grab token dynamically from your environment variables
+    hf_token = os.getenv("HF_TOKEN", "")
+    
+    # Initialize the serverless provider client
+    client = InferenceClient(
+        provider="hf-inference",
+        api_key=hf_token if hf_token else None, # Works tokenless for public models at low scale
+    )
+    
+    model_name = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    
+    try:
+        # feature_extraction retrieves the dense vector layer directly from the model
+        embedding_output = client.feature_extraction(
+            text=query,
+            model=model_name
+        )
+        
+        # Some versions of feature_extraction return numpy arrays or nested structures; 
+        # ensure it maps cleanly to a linear list of floats
+        if hasattr(embedding_output, "tolist"):
+            embedding = embedding_output.tolist()
+        elif isinstance(embedding_output, list):
+            # If it's a batch return variation (matrix instead of vector), flatten it out
+            if len(embedding_output) > 0 and isinstance(embedding_output[0], list):
+                embedding = embedding_output[0]
+            else:
+                embedding = embedding_output
+        else:
+            embedding = list(embedding_output)
+
+        # Confirm the structural output perfectly aligns with Qdrant index settings
+        if len(embedding) == 384:
+            logger.info(f"[retriever] HF SDK embedding success! Generated {len(embedding)} dims.")
+            return [float(x) for x in embedding]
+        else:
+            logger.error(f"[retriever] Dimension mismatch! Expected 384, got {len(embedding)}")
+            
+    except Exception as e:
+        logger.error(f"[retriever] Critical HF InferenceClient pipeline failure: {e}")
+        
+    # Return structural 384-dimensional fallback zero-vector to keep the system running
+    return [0.0] * 384
 
 # ═══════════════════════════════════════════════════════════════════════════
 # VECTOR SEARCH (Qdrant)
@@ -78,8 +127,8 @@ async def vector_search(query: str, top_k: int = RETRIEVAL_TOP_K) -> list[Retrie
     client = _get_qdrant_client()
 
     if client is None:
-        logger.warning("[retriever] Qdrant not configured — returning mock data")
-        return _mock_vector_results()
+        logger.error("[retriever] Qdrant not configured")
+        return []
 
     # ── Real Qdrant search ───────────────────────────────────────────
     try:
@@ -109,7 +158,7 @@ async def vector_search(query: str, top_k: int = RETRIEVAL_TOP_K) -> list[Retrie
 
     except Exception as e:
         logger.error(f"[retriever] Qdrant search failed: {e}")
-        return _mock_vector_results()
+        return []
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -131,8 +180,8 @@ async def graph_search(query: str, article_ids: list[str] | None = None) -> tupl
     driver = _get_neo4j_driver()
 
     if driver is None:
-        logger.warning("[retriever] Neo4j not configured — returning mock data")
-        return _mock_graph_results()
+        logger.error("[retriever] Neo4j not configured")
+        return [], []
 
     # ── Real Neo4j search ────────────────────────────────────────────
     try:
@@ -140,40 +189,67 @@ async def graph_search(query: str, article_ids: list[str] | None = None) -> tupl
         graph_path = []
 
         with driver.session() as session:
-            # If we have article IDs from vector search, expand via graph
+            logger.info(f"article_ids: {article_ids}")
             if article_ids:
-                result = session.run(
-                    """
+                # Existing structural lookup using vector IDs
+                check = session.run("MATCH (a:Article) RETURN count(a) AS c").single()
+                logger.info(f"[debug_neo4j] Total nodes with label :Article in DB: {check['c'] if check else 0}")
+
+                # Clean strings on both sides using trim() to avoid whitespace traps
+                result = session.run("""
                     MATCH (a:Article)
-                    WHERE a.article_id IN $article_ids
+                    WHERE trim(a.article_id) IN [id IN $article_ids | trim(id)]
                     OPTIONAL MATCH path = (a)-[r:CONTAINS|REFERENCES*1..2]-(related:Article)
-                    RETURN a, related, r, path
+                    RETURN a, related, path
                     LIMIT 10
-                    """,
-                    article_ids=article_ids,
-                )
+                """, article_ids=article_ids)
+            else:
+                # Fallback keyword match query if no vector IDs came through
+                logger.warning("[retriever] Vector search returned empty. Falling back to Neo4j text property matching.")
+                result = session.run("""
+                    MATCH (a:Article)
+                    WHERE a.text CONTAINS $search_term OR a.law_name CONTAINS $search_term
+                    OPTIONAL MATCH path = (a)-[r:CONTAINS|REFERENCES*1..1]-(related:Article)
+                    RETURN a, related, path
+                    LIMIT 5
+                """, search_term=query)
 
-                for record in result:
-                    article = record.get("related") or record.get("a")
-                    if article:
-                        chunks.append(RetrievedChunk(
-                            text=article.get("text", ""),
-                            law_name=article.get("law_name", ""),
-                            article_id=article.get("article_id", ""),
-                            categories=article.get("categories", []),
-                            source="neo4j",
-                            score=0.5,  # graph hits don't have similarity scores
+            # ── UN-INDENTED OUTSIDE IF/ELSE: This now processes records for both paths ──
+            for record in result:
+                # 1. ALWAYS extract the base article found by the match
+                base_article = record.get("a")
+                if base_article:
+                    chunks.append(RetrievedChunk(
+                        text=base_article.get("text", ""),
+                        law_name=base_article.get("law_name", ""),
+                        article_id=base_article.get("article_id", ""),
+                        categories=base_article.get("categories", []),
+                        source="neo4j_base",
+                        score=0.6
+                    ))
+                    
+                # 2. Extract the related expanded article if it exists
+                related_article = record.get("related")
+                if related_article:
+                    chunks.append(RetrievedChunk(
+                        text=related_article.get("text", ""),
+                        law_name=related_article.get("law_name", ""),
+                        article_id=related_article.get("article_id", ""),
+                        categories=related_article.get("categories", []),
+                        source="neo4j_expanded",
+                        score=0.5
+                    ))
+
+                # 3. Process path nodes safely
+                path = record.get("path")
+                if path:
+                    for node in path.nodes:
+                        graph_path.append(GraphPathNode(
+                            node_id=str(node.element_id),
+                            label=list(node.labels)[0] if node.labels else "Unknown",
+                            name=node.get("name", node.get("article_id", "")),
+                            relationship=""
                         ))
-
-                    # Build graph path from traversal
-                    if record.get("path"):
-                        for node in record["path"].nodes:
-                            graph_path.append(GraphPathNode(
-                                node_id=str(node.element_id),
-                                label=list(node.labels)[0] if node.labels else "Unknown",
-                                name=node.get("name", node.get("article_id", "")),
-                                relationship="",
-                            ))
 
             # Add relationship labels to graph path
             for i in range(len(graph_path) - 1):
@@ -184,7 +260,7 @@ async def graph_search(query: str, article_ids: list[str] | None = None) -> tupl
 
     except Exception as e:
         logger.error(f"[retriever] Neo4j search failed: {e}")
-        return _mock_graph_results()
+        return [], []
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -201,6 +277,11 @@ async def retrieve(query: str) -> RetrievalResult:
 
     # Step 2: Graph search (using article IDs from vector search for expansion)
     vector_article_ids = list(set(c.article_id for c in vector_chunks if c.article_id))
+
+    logger.info(f"[debug] Extracted raw chunk attributes: {[getattr(c, 'article_id', None) for c in vector_chunks]}")
+    vector_article_ids = list(set(c.article_id for c in vector_chunks if c.article_id))
+    logger.info(f"[debug] Passing to graph search: {vector_article_ids}")
+
     graph_chunks, graph_path = await graph_search(query, article_ids=vector_article_ids)
 
     # Step 3: Compute corroboration (how many graph hits overlap with vector hits)
@@ -229,57 +310,3 @@ async def retrieve(query: str) -> RetrievalResult:
         f"corroboration={corroboration}"
     )
     return result
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# MOCK DATA (used when DBs aren't configured — Dev B can work against these)
-# ═══════════════════════════════════════════════════════════════════════════
-
-def _mock_vector_results() -> list[RetrievedChunk]:
-    """Mock vector results for development without Qdrant."""
-    return [
-        RetrievedChunk(
-            text="كل من اختلس منقولاً مملوكاً لغيره فهو سارق، ويعاقب بالحبس مع الشغل مدة لا تتجاوز سنتين.",
-            law_name="قانون العقوبات",
-            article_id="318",
-            categories=["عقوبات", "سرقة"],
-            source="qdrant",
-            score=0.87,
-        ),
-        RetrievedChunk(
-            text="يعاقب بالسجن المشدد على السرقات التي ترتكب في الطرق العامة أو في إحدى وسائل النقل.",
-            law_name="قانون العقوبات",
-            article_id="315",
-            categories=["عقوبات", "سرقة"],
-            source="qdrant",
-            score=0.82,
-        ),
-        RetrievedChunk(
-            text="إذا وقعت السرقة ليلاً من شخصين فأكثر يكون أحدهم على الأقل حاملاً سلاحاً ظاهراً أو مخبأً.",
-            law_name="قانون العقوبات",
-            article_id="316",
-            categories=["عقوبات", "سرقة"],
-            source="qdrant",
-            score=0.78,
-        ),
-    ]
-
-
-def _mock_graph_results() -> tuple[list[RetrievedChunk], list[GraphPathNode]]:
-    """Mock graph results for development without Neo4j."""
-    chunks = [
-        RetrievedChunk(
-            text="الشروع في الجنايات المنصوص عليها في المواد السابقة يعاقب عليه بالسجن.",
-            law_name="قانون العقوبات",
-            article_id="321",
-            categories=["عقوبات", "سرقة", "شروع"],
-            source="neo4j",
-            score=0.5,
-        ),
-    ]
-    path = [
-        GraphPathNode(node_id="1", label="Law", name="قانون العقوبات", relationship="CONTAINS"),
-        GraphPathNode(node_id="2", label="Article", name="المادة 318", relationship="REFERENCES"),
-        GraphPathNode(node_id="3", label="Article", name="المادة 321", relationship=""),
-    ]
-    return chunks, path

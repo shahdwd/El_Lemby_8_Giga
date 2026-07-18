@@ -29,7 +29,11 @@ app = FastAPI(
 # ── CORS (allow frontend dev server + deployed frontend) ─────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",      # Next.js dev
+        "http://127.0.0.1:3000",
+        "https://*.vercel.app",       # deployed frontend
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -139,20 +143,3 @@ async def delete_session(session_id: str):
     """Clear a session."""
     session_store.delete(session_id)
     return {"status": "deleted", "session_id": session_id}
-
-
-from fastapi import UploadFile, File
-@app.post("/sessions/{session_id}/upload")
-async def upload_document(session_id: str, file: UploadFile = File(...)):
-    """Upload a document to pin to the session."""
-    try:
-        content = await file.read()
-        # Decode as utf-8 (assuming text files for MVP)
-        text = content.decode("utf-8", errors="ignore")
-        session = session_store.get_or_create(session_id)
-        session.pin_document(text)
-        logger.info(f"[upload] pinned document to session={session_id}, length={len(text)}")
-        return {"status": "success", "filename": file.filename, "length": len(text)}
-    except Exception as e:
-        logger.error(f"[upload] error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to process file upload")

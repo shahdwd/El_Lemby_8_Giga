@@ -6,7 +6,7 @@ actually appear in the retrieved context.
 
 import re
 import logging
-from models import (
+from .models import (
     RetrievalResult,
     RetrievedChunk,
     Citation,

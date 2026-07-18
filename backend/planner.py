@@ -5,8 +5,8 @@ Single LLM call (cheap model) that returns one of: qa, document_explanation, cas
 
 import json
 import logging
-from llm_client import call_llm_cheap
-from models import Intent
+from .llm_client import call_llm_cheap
+from .models import Intent
 
 logger = logging.getLogger(__name__)
 

@@ -4,7 +4,7 @@ Also handles response language alignment.
 """
 
 import logging
-from llm_client import call_llm_cheap
+from backend.llm_client import call_llm_cheap
 
 logger = logging.getLogger(__name__)
 
