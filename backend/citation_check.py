@@ -1,7 +1,7 @@
 """
 Citation Check — deterministic grounding verification.
-NOT an LLM call. Checks whether cited article IDs in the response
-actually appear in the retrieved context.
+NOT an LLM call. Checks whether each (law, article) cited in the response
+actually appears in the retrieved context.
 """
 
 import re
@@ -12,54 +12,94 @@ from .models import (
     Citation,
     CitationCheckOutcome,
 )
+from .ingestion.normalize import canonical_article_id
 
 logger = logging.getLogger(__name__)
 
 # ── Regex patterns to extract citations from LLM response ────────────────
 
-# Matches patterns like: "المادة 318", "مادة 15", "Article 318"
-CITATION_PATTERNS = [
-    re.compile(r"(?:ال)?مادة\s+(\d+(?:\s*[\u0660-\u0669]+)?(?:\s*(?:مكرر|بند|فقرة)\s*[\u0621-\u064A]*)?)", re.UNICODE),
-    re.compile(r"[Aa]rticle\s+(\d+(?:\s*(?:bis|paragraph|clause)\s*\w*)?)", re.IGNORECASE),
-]
+# One article id: digits (any script), optionally "مكرر" and/or a letter suffix.
+# A bare letter only counts as a suffix right after "مكرر" ("86 مكرر ب");
+# otherwise it must be bracketed ("77 (و)"), so the "و" in "311 و 318" stays "and".
+_ID = (
+    r"[\d٠-٩۰-۹]+"
+    r"(?:\s*مكرر(?:اً|ا|ًا)?(?:\s+[أ-ي]ـ?(?=[\s.,،؛:)]|$))?)?"
+    r"(?:\s*\([أ-ي]ـ?\))?"
+)
 
-# Matches law names like "قانون العقوبات", "القانون المدني"
-LAW_NAME_PATTERNS = [
-    re.compile(r"(قانون\s+[\u0621-\u064A]+(?:\s+[\u0621-\u064A]+)*)", re.UNICODE),
-    re.compile(r"(القانون\s+[\u0621-\u064A]+(?:\s+[\u0621-\u064A]+)*)", re.UNICODE),
+# "المادة 318", "مادة (122)", "المادتين 311 و 318", "المواد 311، 312 و313"
+_AR_CITATION = re.compile(
+    rf"(?:ال)?(?:مادة|مادتين|مادتان|مواد)\s*(?:من\s+)?\(?\s*((?:{_ID})(?:\s*\)?\s*(?:،|,|و|-|إلى)\s*\(?\s*(?:{_ID}))*)",
+    re.UNICODE,
+)
+# "Article 318", "Articles 311 and 318"
+_EN_CITATION = re.compile(
+    r"[Aa]rticles?\s+(\d+(?:\s*bis)?(?:\s*(?:,|and|-|to)\s*\d+(?:\s*bis)?)*)",
+)
+_ID_RE = re.compile(_ID)
+_EN_ID_RE = re.compile(r"\d+(?:\s*bis)?")
+
+# Words that name a specific Egyptian code. Used to tell which law a citation
+# points at, and to catch citations of a law that was never retrieved.
+LAW_KEYWORDS = [
+    "العقوبات", "المدني", "العمل", "التجارة", "الإجراءات الجنائية", "الجنائية",
+    "الضريبة", "المرافعات", "الأحوال الشخصية", "الدستور", "الإثبات",
+    "Penal", "Civil", "Labor", "Labour", "Commercial", "Criminal Procedure", "Tax",
 ]
+_LAW_KEYWORD_RE = re.compile("|".join(re.escape(k) for k in LAW_KEYWORDS))
+_EN_TO_AR = {
+    "Penal": "العقوبات", "Civil": "المدني", "Labor": "العمل", "Labour": "العمل",
+    "Commercial": "التجارة", "Criminal Procedure": "الجنائية", "Tax": "الضريبة",
+}
+
+
+def _law_mentioned_near(text: str, start: int, end: int) -> str | None:
+    """The law keyword closest to a citation: first look just after it ("المادة 318 من قانون العقوبات"), then just before."""
+    after = _LAW_KEYWORD_RE.search(text[end:end + 80])
+    if after:
+        return after.group(0)
+    before = list(_LAW_KEYWORD_RE.finditer(text[max(0, start - 80):start]))
+    return before[-1].group(0) if before else None
+
+
+def _law_matches(keyword: str, law_name: str) -> bool:
+    return _EN_TO_AR.get(keyword, keyword) in law_name or keyword in law_name
 
 
 def extract_citations_from_response(response_text: str) -> list[Citation]:
-    """Extract all article citations from the LLM's response text."""
+    """
+    Extract all article citations from the LLM's response text.
+    law_name is set to the law keyword found next to the citation ("" if none).
+    """
     citations = []
     seen = set()
 
-    for pattern in CITATION_PATTERNS:
-        for match in pattern.finditer(response_text):
-            article_id = match.group(1).strip()
-
-            # Try to find the associated law name nearby (within ~100 chars before the match)
-            start = max(0, match.start() - 150)
-            context_window = response_text[start:match.end()]
-            law_name = ""
-            for lp in LAW_NAME_PATTERNS:
-                law_match = lp.search(context_window)
-                if law_match:
-                    law_name = law_match.group(1).strip()
-                    break
-
-            key = (law_name, article_id)
+    matches = [(m, _ID_RE) for m in _AR_CITATION.finditer(response_text)]
+    matches += [(m, _EN_ID_RE) for m in _EN_CITATION.finditer(response_text)]
+    for match, id_re in matches:
+        law_keyword = _law_mentioned_near(response_text, match.start(), match.end()) or ""
+        for id_match in id_re.finditer(match.group(1)):
+            article_id = canonical_article_id(id_match.group(0).replace("bis", "مكرر"))
+            key = (law_keyword, article_id)
             if key not in seen:
                 seen.add(key)
-                citations.append(Citation(
-                    law_name=law_name,
-                    article_id=article_id,
-                    text_snippet="",
-                ))
+                citations.append(Citation(law_name=law_keyword, article_id=article_id))
 
     logger.info(f"[citation_check] extracted {len(citations)} citations from response")
     return citations
+
+
+def _find_chunk(citation: Citation, chunks: list[RetrievedChunk]) -> RetrievedChunk | None:
+    """
+    The retrieved chunk this citation refers to, or None if it isn't grounded.
+    - Citation names a law -> that law's article must have been retrieved.
+    - Citation names no law -> grounded only if exactly one retrieved law has that article
+      (otherwise we can't tell which one the model meant).
+    """
+    same_id = [c for c in chunks if c.article_id == citation.article_id]
+    if citation.law_name:
+        return next((c for c in same_id if _law_matches(citation.law_name, c.law_name)), None)
+    return same_id[0] if len({c.law_name for c in same_id}) == 1 else None
 
 
 def check_citations(
@@ -74,43 +114,25 @@ def check_citations(
     """
     extracted = extract_citations_from_response(response_text)
 
-    # Build set of article IDs from retrieved chunks
-    retrieved_article_ids = set()
-    for chunk in retrieval.chunks:
-        # Normalize: strip whitespace, store both raw and cleaned
-        aid = chunk.article_id.strip()
-        retrieved_article_ids.add(aid)
-        # Also add just the numeric part for fuzzy matching
-        nums = re.findall(r"\d+", aid)
-        for n in nums:
-            retrieved_article_ids.add(n)
-
     grounded = []
     ungrounded = []
-
+    grounded_keys = set()
     for citation in extracted:
-        aid = citation.article_id.strip()
-        # Check if the article ID (or its numeric part) exists in retrieved context
-        nums = re.findall(r"\d+", aid)
-        is_grounded = (
-            aid in retrieved_article_ids
-            or any(n in retrieved_article_ids for n in nums)
-        )
-
-        if is_grounded:
-            # Find the matching chunk to get the text snippet
-            for chunk in retrieval.chunks:
-                chunk_nums = re.findall(r"\d+", chunk.article_id)
-                if aid == chunk.article_id.strip() or any(n in chunk_nums for n in nums):
-                    citation.text_snippet = chunk.text[:200]
-                    citation.law_name = citation.law_name or chunk.law_name
-                    break
+        chunk = _find_chunk(citation, retrieval.chunks)
+        if chunk:
+            # The same article may be cited with and without its law name — keep one.
+            if (chunk.law_name, chunk.article_id) in grounded_keys:
+                continue
+            grounded_keys.add((chunk.law_name, chunk.article_id))
+            citation.law_name = chunk.law_name
+            citation.text_snippet = chunk.text[:200]
             grounded.append(citation)
         else:
             ungrounded.append(citation)
 
     logger.info(
         f"[citation_check] grounded={len(grounded)} ungrounded={len(ungrounded)}"
+        + (f" ungrounded_ids={[(c.law_name, c.article_id) for c in ungrounded]}" if ungrounded else "")
     )
     return extracted, grounded, ungrounded
 
@@ -120,19 +142,15 @@ def strip_ungrounded_claims(
     ungrounded: list[Citation],
 ) -> str:
     """
-    Attempt to strip sentences containing ungrounded citations.
+    Drop the lines that contain an ungrounded citation.
     Returns the cleaned text, or empty string if too much was removed.
     """
-    lines = response_text.split("\n")
+    bad = {(c.law_name, c.article_id) for c in ungrounded}
     cleaned_lines = []
 
-    for line in lines:
-        contains_bad_citation = False
-        for citation in ungrounded:
-            if citation.article_id in line:
-                contains_bad_citation = True
-                break
-        if not contains_bad_citation:
+    for line in response_text.split("\n"):
+        line_citations = extract_citations_from_response(line)
+        if not any((c.law_name, c.article_id) in bad for c in line_citations):
             cleaned_lines.append(line)
 
     cleaned = "\n".join(cleaned_lines).strip()
@@ -145,28 +163,21 @@ def strip_ungrounded_claims(
     return cleaned
 
 
-def determine_outcome(
-    all_citations: list[Citation],
-    grounded: list[Citation],
-    ungrounded: list[Citation],
-) -> CitationCheckOutcome:
-    """Determine the citation check outcome."""
-    if not all_citations:
-        # No citations found — could be a general response, treat as passed
-        return CitationCheckOutcome.PASSED
-    if not ungrounded:
-        return CitationCheckOutcome.PASSED
-    return CitationCheckOutcome.FALLBACK  # will be updated by pipeline logic
-
-
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     print("Testing Citation Check:")
-    response_text = "وفقاً للمادة 318 من قانون العقوبات، يعاقب السارق بالحبس."
-    chunk = RetrievedChunk(article_id="318", law_name="قانون العقوبات", text="يعاقب بالحبس مع الشغل...", score=0.9)
-    mock_retrieval = RetrievalResult(chunks=[chunk], graph_path=[])
-    
-    extracted, grounded, ungrounded = check_citations(response_text, mock_retrieval)
-    print(f"Extracted: {len(extracted)}, Grounded: {len(grounded)}, Ungrounded: {len(ungrounded)}")
-    outcome = determine_outcome(extracted, grounded, ungrounded)
-    print(f"Outcome: {outcome.value}")
+    response_text = (
+        "وفقاً للمادة 318 من قانون العقوبات، يعاقب السارق بالحبس.\n"
+        "كما تنص المادة (122) من قانون العمل على الإجازة.\n"
+        "والمادة 5 من القانون المدني تتحدث عن أمر آخر."
+    )
+    chunks = [
+        RetrievedChunk(article_id="318", law_name="كود قانون العقوبات المصري", text="يعاقب بالحبس مع الشغل...", score=0.9),
+        RetrievedChunk(article_id="122", law_name="قانون رقم ١٤ لسنة ٢٠٢٥ بإصدار قانون العمل", text="للعامل الحق في إجازة...", score=0.8),
+        RetrievedChunk(article_id="5", law_name="قانون رقم ١٤ لسنة ٢٠٢٥ بإصدار قانون العمل", text="...", score=0.7),
+    ]
+    extracted, grounded, ungrounded = check_citations(response_text, RetrievalResult(chunks=chunks))
+    print(f"Extracted: {[(c.law_name, c.article_id) for c in extracted]}")
+    print(f"Grounded: {[c.article_id for c in grounded]}  (expected 318, 122)")
+    print(f"Ungrounded: {[(c.law_name, c.article_id) for c in ungrounded]}  (expected المدني 5)")
+    print("Stripped:\n" + strip_ungrounded_claims(response_text, ungrounded))

@@ -21,12 +21,15 @@ GRAPH_CORROBORATION_HIGH = 2  # at least 2 graph hits overlap with vector
 def compute_confidence(
     retrieval: RetrievalResult,
     citation_outcome: CitationCheckOutcome,
+    grounded_citation_count: int = 0,
 ) -> ConfidenceLevel:
     """
     Derive confidence from retrieval signals:
     - Qdrant similarity score of top hit
     - Number of corroborating graph hits (vector ∩ graph overlap)
     - Citation check outcome (passed / patched / retried / fallback)
+      — an answer that cites nothing earns no citation points: "passed"
+        only means nothing was wrong, not that anything was grounded.
 
     Returns:
         ConfidenceLevel.HIGH / MEDIUM / LOW
@@ -51,6 +54,8 @@ def compute_confidence(
 
     # ── Factor 3: Citation check outcome (0–30 points) ───────────────
     match citation_outcome:
+        case _ if grounded_citation_count == 0:
+            score += 0
         case CitationCheckOutcome.PASSED:
             score += 30
         case CitationCheckOutcome.PATCHED:
@@ -71,7 +76,7 @@ def compute_confidence(
     logger.info(f"[confidence] score={score} level={level.value} "
                 f"(vector={retrieval.vector_top_score:.2f}, "
                 f"graph_corr={retrieval.graph_corroboration_count}, "
-                f"citation={citation_outcome.value})")
+                f"citation={citation_outcome.value}, grounded={grounded_citation_count})")
     return level
 
 
@@ -79,5 +84,5 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     print("Testing Confidence Check:")
     mock_retrieval = RetrievalResult(chunks=[], graph_path=[], vector_top_score=0.8, graph_corroboration_count=2)
-    conf = compute_confidence(mock_retrieval, CitationCheckOutcome.PASSED)
+    conf = compute_confidence(mock_retrieval, CitationCheckOutcome.PASSED, grounded_citation_count=2)
     print(f"Calculated Confidence: {conf.value} (Expected: high)")

@@ -32,8 +32,9 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",      # Next.js dev
         "http://127.0.0.1:3000",
-        "https://*.vercel.app",       # deployed frontend
     ],
+    # Wildcards aren't matched in allow_origins — deployed Vercel frontends need a regex.
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

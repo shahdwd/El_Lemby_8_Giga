@@ -26,7 +26,7 @@ from backend.ingestion.chunker import chunk_all
 from backend.ingestion.embed import embed_texts
 
 # Resolve MD_LAWS_DIR relative to the script file location so it works from any CWD
-MD_LAWS_DIR = Path("../data/laws")
+MD_LAWS_DIR = Path(__file__).resolve().parents[1] / "data" / "laws"
 BATCH_SIZE = 100
 
 
@@ -97,7 +97,8 @@ def build_qdrant(chunks: list[dict]):
             
             points = [
                 PointStruct(
-                    id=str(uuid.uuid4()),
+                    # Deterministic id: re-running ingestion overwrites instead of duplicating.
+                    id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"{chunk['law_name']}|{chunk['article_id']}|{chunk.get('chunk_index', 0)}")),
                     vector=emb,
                     payload={
                         "text": chunk["text"],
@@ -111,7 +112,7 @@ def build_qdrant(chunks: list[dict]):
                 for chunk, emb in zip(batch_chunks, batch_embeddings)
             ]
             
-            client.upsert(collection_name=QDRANT_COLLECTION, points=points, wait=False)
+            client.upsert(collection_name=QDRANT_COLLECTION, points=points, wait=True)
             logger.info(f"Uploaded batch {i // BATCH_SIZE + 1} ({len(points)} points)")
             
         logger.info("Qdrant Vector Store Build Completed Successfully!")

@@ -1,7 +1,12 @@
 # Try loading ".env" or "env" from project root or current working dir
 import os
 from pathlib import Path
+import certifi
 from dotenv import load_dotenv
+
+# Python on Windows may lack some root CAs (e.g. SSL.com, used by Neo4j Aura).
+# Point OpenSSL at certifi's bundle so the Neo4j driver can verify the server.
+os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 
 project_root = Path(__file__).resolve().parents[1]
 possible_paths = [

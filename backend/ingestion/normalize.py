@@ -112,6 +112,40 @@ def normalize_digits(s: str) -> str:
     return "".join(out)
 
 
+# ── Article-id canonicalization ──────────────────────────────────────
+# Source files spell the same article many ways: "مادة (122)", "86 مكرر (أ)",
+# "مادة 106 مكررا (ب)", "1 (الباب الأول)". Retrieval, the graph and the
+# citation check all compare ids, so every id goes through this one function
+# (at ingestion AND when parsing citations out of LLM answers).
+#   "مادة (122)"        -> "122"
+#   "86 مكرر (أ)"       -> "86 مكرر أ"
+#   "مادة 106 مكررا (ب)" -> "106 مكرر ب"
+#   "98 (جـ)"           -> "98 ج"
+#   "1 (الباب الأول)"   -> "1"            (chapter goes to categories)
+#   "المادة الأولى"     -> "الأولى"       (issuing-law articles keep their ordinal)
+
+_ARTICLE_PREFIX_RE = re.compile(r"^\s*(?:ال)?مادة\s*")
+_CHAPTER_SUFFIX_RE = re.compile(r"\((?:ال)?(?:باب|فصل|كتاب|قسم)[^)]*\)")
+_MUKARRAR_RE = re.compile(r"مكرر(?:اً|ا|ًا)?")
+
+
+def canonical_article_id(raw: str) -> str:
+    """Normalize an article id (from a source file or an LLM citation) to one canonical form."""
+    s = normalize_digits(raw)
+    s = s.replace("ـ", "")                 # tatweel: "جـ" -> "ج", "هـ" -> "ه"
+    s = _ARTICLE_PREFIX_RE.sub("", s)
+    s = _CHAPTER_SUFFIX_RE.sub("", s)
+    s = _MUKARRAR_RE.sub("مكرر", s)
+    s = re.sub(r"[()\[\]]", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def article_number(article_id: str) -> str | None:
+    """Leading article number of a canonical id ("86 مكرر أ" -> "86"), or None for ordinals."""
+    m = re.match(r"\d+", article_id)
+    return m.group(0) if m else None
+
+
 # ── Canonical .md parsing ────────────────────────────────────────────
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
@@ -187,7 +221,11 @@ def normalize_md_document(filepath: str, content: str) -> list[dict]:
     current_chapter: str | None = None
 
     for i, header_match in enumerate(headers):
-        article_id = normalize_digits(header_match.group(1))
+        raw_id = normalize_digits(header_match.group(1))
+        article_id = canonical_article_id(raw_id)
+        chapter_in_id = _CHAPTER_SUFFIX_RE.search(raw_id)
+        if chapter_in_id:
+            current_chapter = chapter_in_id.group(0).strip("()")
 
         block_start = header_match.end()
         block_end = headers[i + 1].start() if i + 1 < len(headers) else len(body)
@@ -234,5 +272,35 @@ def normalize_md_document(filepath: str, content: str) -> list[dict]:
         if next_chapter:
             current_chapter = next_chapter
 
+    records = _resolve_duplicate_ids(records, filepath)
     logger.info(f"[normalize] parsed {filepath}: {len(records)} articles, law='{law_name}'")
     return records
+
+
+def _resolve_duplicate_ids(records: list[dict], filepath: str) -> list[dict]:
+    """
+    Make (law_name, article_id) unique. Two causes seen in real files:
+    - The issuing law's own articles (1, 2, ...) precede the code's body articles
+      with the same numbers -> the earlier one is renamed "<n> إصدار".
+    - The PDF parser split one article into two blocks -> merged back together.
+    """
+    first_seen: dict[str, int] = {}
+    out: list[dict] = []
+    for r in records:
+        aid = r["article_id"]
+        if aid not in first_seen:
+            first_seen[aid] = len(out)
+            out.append(r)
+            continue
+        prev = out[first_seen[aid]]
+        if first_seen[aid] < 5:
+            prev["article_id"] = f"{aid} إصدار"
+            first_seen[prev["article_id"]] = first_seen[aid]
+            first_seen[aid] = len(out)
+            out.append(r)
+            logger.warning(f"[normalize] {filepath}: article {aid} repeats; earlier one renamed '{prev['article_id']}'")
+        else:
+            prev["text"] = f"{prev['text']}\n{r['text']}".strip()
+            prev["references"] = prev["references"] + r["references"]
+            logger.warning(f"[normalize] {filepath}: article {aid} split in two; merged")
+    return out

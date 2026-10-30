@@ -28,8 +28,11 @@ npm run dev
 ### Ingestion (Dev A)
 
 ```bash
-# From project root — populate Qdrant + Neo4j
-python -m backend.ingestion.ingest
+# From project root — populate Neo4j + Qdrant from backend/data/laws/*.md
+# (both scripts wipe and rebuild their database)
+# LIMIT_LLM_EXTRACTION=0 → use only cached entity extractions (no LLM cost)
+LIMIT_LLM_EXTRACTION=0 python -m backend.ingestion.load_neo4j
+python -m backend.ingestion.load_qdrant
 ```
 
 ## API Endpoints

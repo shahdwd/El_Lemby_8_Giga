@@ -26,7 +26,7 @@ from backend.config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
 from backend.ingestion.normalize import normalize_md_document
 from backend.ingestion.extract_graph import process_articles, get_cache_key
 
-MD_LAWS_DIR = Path("../data/laws")
+MD_LAWS_DIR = Path(__file__).resolve().parents[1] / "data" / "laws"
 BATCH_SIZE = 1000
 
 

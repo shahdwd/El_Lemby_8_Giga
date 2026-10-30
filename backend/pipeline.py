@@ -13,6 +13,7 @@ from backend.models import (
     Citation,
     ConfidenceLevel,
     CitationCheckOutcome,
+    Intent,
 )
 from backend.planner import classify_intent
 from backend.translation import ensure_arabic_query
@@ -28,6 +29,11 @@ from backend.confidence import compute_confidence
 from backend.session import session_store
 
 logger = logging.getLogger(__name__)
+
+OFF_TOPIC_MESSAGE = {
+    "ar": "أنا مساعد متخصص في القانون المصري فقط. يرجى طرح سؤال قانوني وسأساعدك بالاستناد إلى نصوص القانون.",
+    "en": "I can only help with questions about Egyptian law. Please ask a legal question and I'll answer from the legal texts.",
+}
 
 
 async def handle_chat(message: str, session_id: str, language: str = "ar") -> ChatResponse:
@@ -54,13 +60,25 @@ async def handle_chat(message: str, session_id: str, language: str = "ar") -> Ch
     intent = await classify_intent(message, has_document=has_document)
     logger.info(f"[pipeline] intent={intent.value}")
 
+    if intent == Intent.OFF_TOPIC:
+        # Nothing to retrieve or ground — answer without an LLM call.
+        answer = OFF_TOPIC_MESSAGE["ar" if language == "ar" else "en"]
+        session_store.add_turn(session_id, "user", message)
+        session_store.add_turn(session_id, "assistant", answer)
+        return ChatResponse(
+            answer=answer,
+            confidence=ConfidenceLevel.LOW,
+            session_id=session_id,
+            language=language,
+        )
+
     # ── 2. Translation ───────────────────────────────────────────────
     arabic_query, was_translated = await ensure_arabic_query(message)
     if was_translated:
         logger.info(f"[pipeline] translated query to Arabic")
 
     # ── 3. Retrieval ─────────────────────────────────────────────────
-    raw_retrieval = await retrieve(arabic_query)
+    raw_retrieval = await retrieve(arabic_query, intent=intent)
     logger.info(f"[pipeline] retrieved {len(raw_retrieval.chunks)} raw chunks")
 
     # ── 4. Context Fusion ────────────────────────────────────────────
@@ -129,7 +147,7 @@ async def handle_chat(message: str, session_id: str, language: str = "ar") -> Ch
                 response_text = fallback_msg + source_list
 
     # ── 7. Confidence Score ──────────────────────────────────────────
-    confidence = compute_confidence(fused, citation_outcome)
+    confidence = compute_confidence(fused, citation_outcome, grounded_citation_count=len(grounded))
 
     # ── 8. Update Session ────────────────────────────────────────────
     session_store.add_turn(session_id, "user", message)
