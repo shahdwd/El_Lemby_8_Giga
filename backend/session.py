@@ -45,6 +45,11 @@ class SessionStore:
         session.pinned_document = content
         logger.info(f"[session] pinned document ({len(content)} chars) to session {session_id}")
 
+    def unpin_document(self, session_id: str) -> None:
+        session = self.get(session_id)
+        if session:
+            session.pinned_document = None
+
     def delete(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)
         logger.info(f"[session] deleted session: {session_id}")

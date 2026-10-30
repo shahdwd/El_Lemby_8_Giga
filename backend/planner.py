@@ -38,9 +38,12 @@ async def classify_intent(message: str, has_document: bool = False) -> Intent:
         logger.info("[planner] heuristic → document_explanation (short msg + pinned doc)")
         return Intent.DOCUMENT_EXPLANATION
 
+    user_content = message
+    if has_document:
+        user_content = f"[The user has uploaded a document in this session]\n{message}"
     messages = [
         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
-        {"role": "user", "content": message},
+        {"role": "user", "content": user_content},
     ]
 
     try:

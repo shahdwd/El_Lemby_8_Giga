@@ -62,7 +62,7 @@ def save_cache(cache: dict):
     except Exception as e:
         logger.error(f"Failed to save cache file: {e}")
 
-async def extract_for_article(article_text: str, sem: asyncio.Semaphore) -> dict:
+async def extract_for_article(article_text: str, sem: asyncio.Semaphore) -> dict | None:
     """Call Gemini to extract entities and relationships for a single article."""
     async with sem:
         messages = [
@@ -96,8 +96,8 @@ async def extract_for_article(article_text: str, sem: asyncio.Semaphore) -> dict
                 logger.warning(f"Attempt {attempt + 1} failed to parse extract for article. Error: {e}")
                 await asyncio.sleep(1)
         
-        # Return empty schema if failed after retries
-        return {"entities": [], "relationships": []}
+        # Failed after retries — return None so it isn't cached and gets retried next run
+        return None
 
 async def process_articles(records: list[dict], limit: int | None = None) -> dict:
     """Process articles in batches, using cached results where available and querying the LLM for the rest."""
@@ -129,6 +129,8 @@ async def process_articles(records: list[dict], limit: int | None = None) -> dic
             
             # Merge new results into cache
             for r, res in zip(batch, results):
+                if res is None:
+                    continue
                 key = get_cache_key(r["law_name"], r["article_id"])
                 cache[key] = res
                 

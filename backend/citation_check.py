@@ -37,6 +37,12 @@ _EN_CITATION = re.compile(
     r"[Aa]rticles?\s+(\d+(?:\s*bis)?(?:\s*(?:,|and|-|to)\s*\d+(?:\s*bis)?)*)",
 )
 _ID_RE = re.compile(_ID)
+# "المادة 3 من العقد" / "Article 3 of the contract" points into an uploaded document.
+_DOCUMENT_REF_RE = re.compile(
+    r"\s*\)?\s*(?:من|في)\s+(?:هذا\s+|هذه\s+)?(?:العقد|الوثيقة|المستند|الاتفاق|الاتفاقية)"
+    r"|\s*(?:of|in)\s+the\s+(?:contract|document|agreement)",
+    re.IGNORECASE,
+)
 _EN_ID_RE = re.compile(r"\d+(?:\s*bis)?")
 
 # Words that name a specific Egyptian code. Used to tell which law a citation
@@ -77,6 +83,9 @@ def extract_citations_from_response(response_text: str) -> list[Citation]:
     matches = [(m, _ID_RE) for m in _AR_CITATION.finditer(response_text)]
     matches += [(m, _EN_ID_RE) for m in _EN_CITATION.finditer(response_text)]
     for match, id_re in matches:
+        if _DOCUMENT_REF_RE.match(response_text, match.end()):
+            continue  # a clause of the user's uploaded document, not a law
+
         law_keyword = _law_mentioned_near(response_text, match.start(), match.end()) or ""
         for id_match in id_re.finditer(match.group(1)):
             article_id = canonical_article_id(id_match.group(0).replace("bis", "مكرر"))

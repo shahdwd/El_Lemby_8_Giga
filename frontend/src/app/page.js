@@ -36,6 +36,7 @@ export default function Home() {
   const [sessions, setSessions] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [uploadedDoc, setUploadedDoc] = useState(null); // { name, size }
+  const [isUploading, setIsUploading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [expandedCitations, setExpandedCitations] = useState({}); // { msgIdx: bool }
   const messagesEndRef = useRef(null);
@@ -62,8 +63,9 @@ export default function Home() {
         "ما عقوبة الموظف العام الذي يقبل رشوة؟",
         "ما هي شروط صحة العقد في القانون المدني؟",
       ],
-      uploadTitle: "تحميل وثيقة قانونية (Live Ingestion)",
-      uploadSubtitle: "اسحب ملف PDF أو انقر لتحميله للتحليل والتلخيص",
+      uploadTitle: "تحميل وثيقة (عقد، خطاب، ...)",
+      uploadSubtitle: "انقر لتحميل ملف PDF أو نصي لشرحه في ضوء القانون",
+      uploading: "جاري قراءة الملف...",
       high: "عالي",
       medium: "متوسط",
       low: "منخفض",
@@ -96,8 +98,9 @@ export default function Home() {
         "What is the penalty for a public official who accepts a bribe?",
         "What makes a contract valid under the Civil Code?",
       ],
-      uploadTitle: "Upload Legal Document (Live Ingestion)",
-      uploadSubtitle: "Drag & drop PDF or click to upload for summary & explainability",
+      uploadTitle: "Upload a Document (contract, letter, ...)",
+      uploadSubtitle: "Click to upload a PDF or text file to explain it against the law",
+      uploading: "Reading the file...",
       high: "High",
       medium: "Medium",
       low: "Low",
@@ -117,18 +120,20 @@ export default function Home() {
   // API Backend Base URL (set NEXT_PUBLIC_API_BASE when deploying; inlined at build time)
   const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 
-  // Messages of sessions that aren't on screen, so switching back restores them
-  const sessionMessagesRef = useRef({});
+  // Messages + uploaded doc of sessions that aren't on screen, so switching back restores them
+  const sessionStateRef = useRef({});
 
   const saveCurrentSession = () => {
-    if (sessionId) sessionMessagesRef.current[sessionId] = messages;
+    if (sessionId) sessionStateRef.current[sessionId] = { messages, uploadedDoc };
   };
 
   const switchSession = (sessId) => {
     if (sessId === sessionId) return;
     saveCurrentSession();
+    const saved = sessionStateRef.current[sessId] || {};
     setSessionId(sessId);
-    setMessages(sessionMessagesRef.current[sessId] || []);
+    setMessages(saved.messages || []);
+    setUploadedDoc(saved.uploadedDoc || null);
     setSidebarOpen(false);
   };
 
@@ -227,7 +232,7 @@ export default function Home() {
   const deleteSession = (sessId, e) => {
     e.stopPropagation();
     setSessions(prev => prev.filter(s => s !== sessId));
-    delete sessionMessagesRef.current[sessId];
+    delete sessionStateRef.current[sessId];
     fetch(`${API_BASE}/sessions/${sessId}`, { method: "DELETE" }).catch(() => {});
     if (sessionId === sessId) {
       startNewChat();
@@ -241,27 +246,49 @@ export default function Home() {
     }));
   };
 
+  const addSystemMessage = (content) => {
+    setMessages(prev => [...prev, { role: "assistant", system: true, content }]);
+  };
+
+  // Upload a document; the backend extracts its text and pins it to this session,
+  // so the following questions are answered about it.
+  const uploadDocument = async (file) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("session_id", sessionId);
+    setIsUploading(true);
+    try {
+      const response = await fetch(`${API_BASE}/upload`, { method: "POST", body: form });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || "Upload failed");
+      }
+      setUploadedDoc({ name: file.name, size: (file.size / 1024).toFixed(1) });
+      addSystemMessage(language === "ar"
+        ? `تم تحميل "${file.name}" (${data.chars} حرف). اسأل عنه الآن، مثلاً: اشرح لي هذه الوثيقة.`
+        : `"${file.name}" uploaded (${data.chars} characters). Ask about it now, e.g. "Explain this document".`);
+    } catch (error) {
+      addSystemMessage(language === "ar"
+        ? `تعذر تحميل "${file.name}": ${error.message}`
+        : `Could not upload "${file.name}": ${error.message}`);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const removeDocument = () => {
+    setUploadedDoc(null);
+    fetch(`${API_BASE}/sessions/${sessionId}/document`, { method: "DELETE" }).catch(() => {});
+  };
+
   const triggerUpload = () => {
-    // Mock live ingestion file upload
+    if (isUploading) return;
     const input = document.createElement("input");
     input.type = "file";
     input.accept = ".pdf,.txt,.md";
     input.onchange = (e) => {
       const file = e.target.files[0];
-      if (file) {
-        setUploadedDoc({ name: file.name, size: (file.size / 1024).toFixed(1) });
-        // Add fake system message for upload demo
-        setMessages(prev => [
-          ...prev,
-          {
-            role: "assistant",
-            system: true,
-            content: language === "ar"
-              ? `تم تحميل الملف "${file.name}" بنجاح وجاري إدراجه وتلخيصه كمرجع إضافي للمحادثة.`
-              : `File "${file.name}" uploaded successfully and pinned as context for this session.`
-          }
-        ]);
-      }
+      if (file) uploadDocument(file);
     };
     input.click();
   };
@@ -289,7 +316,7 @@ export default function Home() {
                   📄 {uploadedDoc.name} ({uploadedDoc.size} KB)
                 </span>
                 <button
-                  onClick={() => setUploadedDoc(null)}
+                  onClick={removeDocument}
                   style={{ background: "transparent", border: "none", color: "var(--error)", cursor: "pointer" }}
                 >
                   ✕
@@ -297,8 +324,10 @@ export default function Home() {
               </div>
             ) : (
               <div className="upload-box" onClick={triggerUpload}>
-                <div style={{ fontSize: "1.5rem" }}>📤</div>
-                <div className="upload-box-text">{activeTranslation.uploadSubtitle}</div>
+                <div style={{ fontSize: "1.5rem" }}>{isUploading ? "⏳" : "📤"}</div>
+                <div className="upload-box-text">
+                  {isUploading ? activeTranslation.uploading : activeTranslation.uploadSubtitle}
+                </div>
               </div>
             )}
           </div>

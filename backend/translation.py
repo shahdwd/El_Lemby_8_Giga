@@ -36,6 +36,34 @@ async def translate_to_arabic(text: str) -> str:
     return result.strip()
 
 
+async def rewrite_for_retrieval(text: str) -> str | None:
+    """
+    Rewrite a question (any language) in the wording Egyptian statutes use, as an
+    extra retrieval query. People say "موظف عام يقبل رشوة"; the Penal Code says
+    "موظف عمومي ... أخذ عطية ... يعد مرتشياً" — neither search method bridges that.
+    Returns None on failure (retrieval then uses the original query only).
+    """
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Rewrite the user's legal question about Egyptian law as one short Arabic sentence "
+                "using the exact wording Egyptian statutes use (e.g. 'موظف عمومي' not 'موظف عام', "
+                "'عطية' and 'مرتشياً' for bribery, 'إنهاء عقد العمل' for dismissal). "
+                "Do not answer the question. Return ONLY the rewritten sentence."
+            ),
+        },
+        {"role": "user", "content": text},
+    ]
+    try:
+        result = (await call_llm_cheap(messages, temperature=0.1, max_tokens=120)).strip()
+        logger.info(f"[translation] retrieval rewrite: '{result[:80]}'")
+        return result or None
+    except Exception as e:
+        logger.warning(f"[translation] retrieval rewrite failed: {e}")
+        return None
+
+
 async def ensure_arabic_query(query: str) -> tuple[str, bool]:
     """
     Ensure the query is in Arabic for retrieval.

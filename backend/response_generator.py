@@ -71,14 +71,15 @@ You are a specialized Egyptian legal assistant. Your task is to answer legal que
 3. If the context doesn't contain enough information to answer, say so explicitly.
 4. {lang_instruction}
 5. Structure your answer clearly with the legal reasoning first, then the conclusion.
-6. End with a brief disclaimer that this is informational, not legal advice.{strictness_note}
+6. End with a brief disclaimer that this is informational, not legal advice.
+7. If an uploaded document is provided, explain or analyze it as asked, and relate its terms to the retrieved legal articles. Refer to the document's own clauses as "البند" / "clause" (not "المادة"), and still cite ONLY laws from the retrieved context.{strictness_note}
 
 ## Retrieved Legal Context:
 {context_block}
 
 {f"## Graph Traversal Path:{chr(10)}{graph_path_text}" if graph_path_text else ""}
 
-{f"## Uploaded Document:{chr(10)}{pinned_document[:2000]}" if pinned_document else ""}"""
+{f"## Uploaded Document:{chr(10)}{pinned_document}" if pinned_document else ""}"""
 
     messages = [{"role": "system", "content": system_prompt}]
 

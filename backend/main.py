@@ -4,7 +4,7 @@ Entry point: uvicorn backend.main:app --reload
 """
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
@@ -15,6 +15,7 @@ import logging
 from backend.pipeline import handle_chat
 from backend.session import session_store
 from backend.guardrails import check_input
+from backend.document_upload import extract_text, DocumentError
 from backend.models import ChatResponse, ConfidenceLevel, CitationCheckOutcome
 
 # ── Logging ──────────────────────────────────────────────────────────────
@@ -27,8 +28,10 @@ async def lifespan(app: FastAPI):
     # Load the embedding model before the first request: lazily it takes ~20s,
     # which would land on whoever asks the first question (e.g. a judge).
     from backend.ingestion.embed import get_model
+    from backend.keyword_search import get_index
     await asyncio.to_thread(get_model)
-    logger.info("[startup] embedding model ready")
+    await asyncio.to_thread(get_index)
+    logger.info("[startup] embedding model + keyword index ready")
     yield
 
 
@@ -158,3 +161,32 @@ async def delete_session(session_id: str):
     """Clear a session."""
     session_store.delete(session_id)
     return {"status": "deleted", "session_id": session_id}
+
+
+@app.post("/upload")
+async def upload_document(file: UploadFile = File(...), session_id: str = Form(...)):
+    """
+    Extract text from an uploaded PDF/TXT/MD and pin it to the session.
+    Later /chat turns in that session explain the document against the law.
+    """
+    data = await file.read()
+    try:
+        text = await asyncio.to_thread(extract_text, file.filename or "", data)
+    except DocumentError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    session_store.pin_document(session_id, text)
+    logger.info(f"[upload] session={session_id} file={file.filename} chars={len(text)}")
+    return {
+        "session_id": session_id,
+        "filename": file.filename,
+        "chars": len(text),
+        "preview": text[:300],
+    }
+
+
+@app.delete("/sessions/{session_id}/document")
+async def remove_document(session_id: str):
+    """Unpin the uploaded document from a session."""
+    session_store.unpin_document(session_id)
+    return {"status": "removed", "session_id": session_id}

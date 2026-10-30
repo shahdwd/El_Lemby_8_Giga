@@ -1,5 +1,6 @@
 """
-Retriever — combined vector (Qdrant) + graph (Neo4j) retrieval.
+Retriever — hybrid text search (Qdrant vectors + BM25 keywords) expanded
+through the Neo4j graph.
 
 Articles are identified by (law_name, article_id) everywhere: article numbers
 repeat across laws, so an article_id on its own is ambiguous.
@@ -18,6 +19,7 @@ from .config import (
 )
 from .models import RetrievedChunk, RetrievalResult, GraphPathNode, Intent
 from .ingestion.normalize import article_number
+from .keyword_search import keyword_search
 
 logger = logging.getLogger(__name__)
 
@@ -222,26 +224,99 @@ async def graph_search(seeds: list[RetrievedChunk], limit: int = RETRIEVAL_TOP_K
 # COMBINED RETRIEVAL
 # ═══════════════════════════════════════════════════════════════════════════
 
-async def retrieve(query: str, intent: Intent = Intent.QA) -> RetrievalResult:
+_RRF_K = 60  # standard Reciprocal Rank Fusion constant
+
+
+async def _hybrid_rank(query: str, per_query: int) -> tuple[list[RetrievedChunk], float]:
+    """
+    Hybrid retrieval for one query: vector (Qdrant) + keyword (BM25), merged with
+    Reciprocal Rank Fusion — each list adds 1/(k + rank) per article, so an
+    article both methods agree on rises to the top.
+
+    Returns (chunks in fused order, best vector cosine score).
+    """
+    vector_hits = await vector_search(query, top_k=per_query)
+    keyword_hits = await asyncio.to_thread(keyword_search, query, per_query)
+
+    fused: dict[tuple[str, str], float] = {}
+    chunks: dict[tuple[str, str], RetrievedChunk] = {}
+    for hits in (vector_hits, keyword_hits):
+        for rank, chunk in enumerate(hits):
+            key = (chunk.law_name, chunk.article_id)
+            fused[key] = fused.get(key, 0.0) + 1.0 / (_RRF_K + rank + 1)
+            if key not in chunks:
+                chunks[key] = chunk
+            elif chunks[key].source != chunk.source:
+                chunks[key].source = "hybrid"
+
+    ranked = sorted(fused, key=fused.get, reverse=True)
+    return [chunks[k] for k in ranked], (vector_hits[0].score if vector_hits else 0.0)
+
+
+async def _hybrid_search(queries: list[str], per_query: int, top_k: int) -> tuple[list[RetrievedChunk], float]:
+    """
+    Hybrid-rank every query, then merge round-robin (every query's #1, then every
+    #2, ...) so each clause of a document gets its best match in, rather than
+    articles that weakly match many clauses.
+
+    Returns (top_k chunks, best vector cosine score). Chunk scores are set by
+    position to 1.0-0.55 so they sort above graph expansions (0.45-0.5) in
+    context fusion; the cosine score is returned separately for confidence.
+    """
+    rankings = []
+    vector_top = 0.0
+    for q in queries:
+        ranked, top = await _hybrid_rank(q, per_query)
+        rankings.append(ranked)
+        vector_top = max(vector_top, top)
+
+    result: list[RetrievedChunk] = []
+    seen: set[tuple[str, str]] = set()
+    for position in range(max((len(r) for r in rankings), default=0)):
+        for ranked in rankings:
+            if position < len(ranked) and len(result) < top_k:
+                chunk = ranked[position]
+                key = (chunk.law_name, chunk.article_id)
+                if key not in seen:
+                    seen.add(key)
+                    result.append(chunk)
+
+    for i, chunk in enumerate(result):
+        chunk.score = 1.0 - 0.45 * i / max(1, len(result) - 1)
+    return result, vector_top
+
+
+async def retrieve(query: str, intent: Intent = Intent.QA, extra_queries: list[str] | None = None) -> RetrievalResult:
     """
     Run vector search, then expand its hits through the graph.
     This is the main entry point — the rest of the pipeline calls this.
+
+    extra_queries: further texts to search (e.g. each clause of an uploaded
+    contract); their hits are merged with the main query's.
     """
     if intent == Intent.OFF_TOPIC:
         logger.info("[retriever] off_topic — skipping retrieval")
         return RetrievalResult()
 
-    vector_chunks = await vector_search(query)
-    graph_chunks, graph_paths = await graph_search(vector_chunks)
+    queries = [query, *(extra_queries or [])]
+    if len(queries) <= 2:
+        # A question (plus its statutory-wording rewrite): full-depth search.
+        per_query, top_k = RETRIEVAL_TOP_K, RETRIEVAL_TOP_K + 3
+    else:
+        # A document: search each clause and keep ~its top 2 (typically the vector
+        # and the keyword winner); context fusion's token budget caps the total.
+        per_query, top_k = 3, 2 * len(queries)
+    seed_chunks, vector_top = await _hybrid_search(queries, per_query=per_query, top_k=top_k)
+    graph_chunks, graph_paths = await graph_search(seed_chunks)
 
     # Corroboration: articles the graph reached from a *different* seed that
-    # vector search also found independently.
-    vector_keys = {(c.law_name, c.article_id) for c in vector_chunks}
+    # the text search also found independently.
+    seed_keys = {(c.law_name, c.article_id) for c in seed_chunks}
     graph_keys = {(c.law_name, c.article_id) for c in graph_chunks}
-    corroboration = len(vector_keys & graph_keys)
+    corroboration = len(seed_keys & graph_keys)
 
-    all_chunks = list(vector_chunks)
-    seen = set(vector_keys)
+    all_chunks = list(seed_chunks)
+    seen = set(seed_keys)
     for gc in graph_chunks:
         key = (gc.law_name, gc.article_id)
         if key not in seen:
@@ -252,7 +327,7 @@ async def retrieve(query: str, intent: Intent = Intent.QA) -> RetrievalResult:
         chunks=all_chunks,
         graph_path=graph_paths[0] if graph_paths else [],
         graph_paths=graph_paths,
-        vector_top_score=vector_chunks[0].score if vector_chunks else 0.0,
+        vector_top_score=vector_top,
         graph_corroboration_count=corroboration,
     )
 

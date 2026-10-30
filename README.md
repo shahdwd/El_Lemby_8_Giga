@@ -43,6 +43,10 @@ python -m backend.ingestion.load_qdrant
 | POST | `/chat` | Main chat endpoint |
 | GET | `/sessions/{id}` | Get session history |
 | DELETE | `/sessions/{id}` | Clear a session |
+| POST | `/upload` | Upload a PDF/TXT/MD (multipart: `file`, `session_id`); its text is pinned to the session |
+| DELETE | `/sessions/{id}/document` | Remove the uploaded document from a session |
+
+A sample contract with two clauses that break the Labor Law (7 days of annual leave, dismissal without notice) is in [demo/sample_employment_contract.txt](demo/sample_employment_contract.txt) — upload it and ask "هل يوجد في هذا العقد بنود مخالفة لقانون العمل؟".
 
 ### POST /chat
 
@@ -76,6 +80,19 @@ User → React/Next.js → FastAPI → Pipeline Orchestrator
   ├── Planner (LLM) → Translation (LLM) → Retriever (Qdrant + Neo4j)
   → Context Fusion → Legal Reasoning (LLM) → Citation Check → Response
 ```
+
+- **Hybrid retrieval**: vector search (Qdrant) + keyword search (BM25 over the same articles), merged with Reciprocal Rank Fusion, then expanded through the Neo4j graph (articles sharing an extracted entity, and neighbouring articles). For an uploaded document, every clause is searched.
+- **Citation check**: every `(law, article)` the answer cites must be in the retrieved context; otherwise the line is stripped, the answer regenerated once, or the raw sources shown.
+- **Laws covered** (`backend/data/laws`): Labor Law 14/2025 (full), Civil Code 131/1948 (full), Penal Code (Articles 1–178), Real Estate Tax Law; Criminal Procedure and Commercial Code only partially.
+
+## Evaluation
+
+```bash
+# With the backend running
+python eval/eval_harness.py
+```
+
+Runs 11 legal questions with known correct articles plus off-topic, prompt-injection and out-of-corpus cases; prints accuracy, citation-check outcomes and latency, and writes `eval/results.json`.
 
 ## Team
 

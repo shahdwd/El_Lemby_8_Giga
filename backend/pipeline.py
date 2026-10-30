@@ -7,6 +7,7 @@ Plain Python async function, no framework. Calls components in sequence:
 This replaces LangGraph with a simple, linear, debuggable pipeline.
 """
 
+import asyncio
 import logging
 from backend.models import (
     ChatResponse,
@@ -18,7 +19,7 @@ from backend.models import (
     RetrievalResult,
 )
 from backend.planner import classify_intent
-from backend.translation import ensure_arabic_query
+from backend.translation import ensure_arabic_query, rewrite_for_retrieval
 from backend.retriever import retrieve, article_node_name
 from backend.context_fusion import fuse_context
 from backend.response_generator import generate_response
@@ -36,6 +37,11 @@ OFF_TOPIC_MESSAGE = {
     "ar": "أنا مساعد متخصص في القانون المصري فقط. يرجى طرح سؤال قانوني وسأساعدك بالاستناد إلى نصوص القانون.",
     "en": "I can only help with questions about Egyptian law. Please ask a legal question and I'll answer from the legal texts.",
 }
+
+
+def _document_paragraphs(document: str, limit: int = 15) -> list[str]:
+    """Substantive lines of an uploaded document (clauses), skipping headers and signatures."""
+    return [line for line in document.splitlines() if len(line.strip()) >= 40][:limit]
 
 
 def _pick_graph_path(retrieval: RetrievalResult, citations: list[Citation]) -> list[GraphPathNode]:
@@ -75,7 +81,13 @@ async def handle_chat(message: str, session_id: str, language: str = "ar") -> Ch
     # ── 1. Planner ───────────────────────────────────────────────────
     session = session_store.get_or_create(session_id)
     has_document = session.pinned_document is not None
-    intent = await classify_intent(message, has_document=has_document)
+    # Planner, translation and the statutory-wording rewrite are independent
+    # cheap LLM calls — run them together to keep latency at one round trip.
+    intent, (arabic_query, was_translated), statutory_query = await asyncio.gather(
+        classify_intent(message, has_document=has_document),
+        ensure_arabic_query(message),
+        rewrite_for_retrieval(message),
+    )
     logger.info(f"[pipeline] intent={intent.value}")
 
     if intent == Intent.OFF_TOPIC:
@@ -90,13 +102,18 @@ async def handle_chat(message: str, session_id: str, language: str = "ar") -> Ch
             language=language,
         )
 
-    # ── 2. Translation ───────────────────────────────────────────────
-    arabic_query, was_translated = await ensure_arabic_query(message)
+    # ── 2. Translation (ran above, alongside the planner) ────────────
     if was_translated:
         logger.info(f"[pipeline] translated query to Arabic")
 
     # ── 3. Retrieval ─────────────────────────────────────────────────
-    raw_retrieval = await retrieve(arabic_query, intent=intent)
+    extra_queries = [statutory_query] if statutory_query else []
+    if session.pinned_document:
+        # Questions about an uploaded document ("is this contract legal?") say
+        # little about which laws apply — its clauses do. Search each one too
+        # (the embedding model only reads ~128 tokens at a time).
+        extra_queries += _document_paragraphs(session.pinned_document)
+    raw_retrieval = await retrieve(arabic_query, intent=intent, extra_queries=extra_queries)
     logger.info(f"[pipeline] retrieved {len(raw_retrieval.chunks)} raw chunks")
 
     # ── 4. Context Fusion ────────────────────────────────────────────

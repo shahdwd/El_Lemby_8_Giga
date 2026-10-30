@@ -53,5 +53,5 @@ def embed_texts(texts: list[str], batch_size: int = 64, show_progress: bool = Tr
 def embed_single(text: str) -> list[float]:
     """Embed a single text string."""
     model = get_model()
-    embedding = model.encode(text, normalize_embeddings=True)
+    embedding = model.encode(text, normalize_embeddings=True, show_progress_bar=False)
     return embedding.tolist()
