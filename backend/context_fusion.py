@@ -64,6 +64,7 @@ def fuse_context(retrieval: RetrievalResult, token_budget: int = TOKEN_BUDGET) -
     return RetrievalResult(
         chunks=capped_chunks,
         graph_path=retrieval.graph_path,
+        graph_paths=retrieval.graph_paths,
         vector_top_score=retrieval.vector_top_score,
         graph_corroboration_count=retrieval.graph_corroboration_count,
     )

@@ -3,10 +3,12 @@ FastAPI application — single process, no framework beyond standard library + L
 Entry point: uvicorn backend.main:app --reload
 """
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
+import asyncio
 import uuid
 import logging
 
@@ -19,11 +21,23 @@ from backend.models import ChatResponse, ConfidenceLevel, CitationCheckOutcome
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
 
+# ── Startup ──────────────────────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Load the embedding model before the first request: lazily it takes ~20s,
+    # which would land on whoever asks the first question (e.g. a judge).
+    from backend.ingestion.embed import get_model
+    await asyncio.to_thread(get_model)
+    logger.info("[startup] embedding model ready")
+    yield
+
+
 # ── App ──────────────────────────────────────────────────────────────────
 app = FastAPI(
     title="Qanoony — Egyptian Law AI Assistant",
     version="1.0.0",
     description="AI-powered Egyptian legal assistant with grounded citations and explainability.",
+    lifespan=lifespan,
 )
 
 # ── CORS (allow frontend dev server + deployed frontend) ─────────────────

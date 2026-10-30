@@ -139,7 +139,7 @@ RETURN law, c, rel
 def _node_to_path(node, relationship: str = "") -> GraphPathNode:
     label = next((l for l in node.labels if l != "SemanticEntity"), "Unknown")
     if label == "Article":
-        name = f"{node.get('law_name', '')} — المادة {node.get('article_id', '')}"
+        name = article_node_name(node.get("law_name", ""), node.get("article_id", ""))
     else:
         name = node.get("name", "")
     return GraphPathNode(node_id=node.element_id, label=label, name=name, relationship=relationship)
@@ -156,7 +156,12 @@ def _article_chunk(node, source: str, score: float) -> RetrievedChunk:
     )
 
 
-def _graph_search_sync(seeds: list[RetrievedChunk], limit: int) -> tuple[list[RetrievedChunk], list[GraphPathNode]]:
+def article_node_name(law_name: str, article_id: str) -> str:
+    """Display name of an Article node in a graph path."""
+    return f"{law_name} — المادة {article_id}"
+
+
+def _graph_search_sync(seeds: list[RetrievedChunk], limit: int) -> tuple[list[RetrievedChunk], list[list[GraphPathNode]]]:
     driver = _get_neo4j_driver()
     if driver is None:
         logger.error("[retriever] Neo4j not configured")
@@ -175,34 +180,31 @@ def _graph_search_sync(seeds: list[RetrievedChunk], limit: int) -> tuple[list[Re
                 neighbour_params.append({"law_name": s.law_name, "article_id": str(m)})
 
     chunks: list[RetrievedChunk] = []
-    graph_path: list[GraphPathNode] = []
+    paths: list[list[GraphPathNode]] = []
     try:
         with driver.session() as session:
             for rec in session.run(_SHARED_ENTITY_QUERY, seeds=seed_params, limit=limit):
                 chunks.append(_article_chunk(rec["rel"], "neo4j_entity", 0.5))
-                if not graph_path:
-                    # Strongest link becomes the displayed path:
-                    # Law -CONTAINS-> seed Article -r1-> Entity <-r2- related Article
-                    graph_path = [
-                        _node_to_path(rec["law"], rec["c"].type),
-                        _node_to_path(rec["a"], rec["r1"].type),
-                        _node_to_path(rec["e"], f"← {rec['r2'].type}"),
-                        _node_to_path(rec["rel"]),
-                    ]
+                # Law -CONTAINS-> seed Article -r1-> Entity <-r2- related Article
+                paths.append([
+                    _node_to_path(rec["law"], rec["c"].type),
+                    _node_to_path(rec["a"], rec["r1"].type),
+                    _node_to_path(rec["e"], rec["r2"].type),
+                    _node_to_path(rec["rel"]),
+                ])
 
             for rec in session.run(_NEIGHBOUR_QUERY, pairs=neighbour_params):
                 chunks.append(_article_chunk(rec["rel"], "neo4j_neighbour", 0.45))
-                if not graph_path:
-                    graph_path = [_node_to_path(rec["law"], rec["c"].type), _node_to_path(rec["rel"])]
+                paths.append([_node_to_path(rec["law"], rec["c"].type), _node_to_path(rec["rel"])])
     except Exception as e:
         logger.error(f"[retriever] Neo4j search failed: {e}")
         return [], []
 
-    logger.info(f"[retriever] Neo4j returned {len(chunks)} related articles, {len(graph_path)} path nodes")
-    return chunks, graph_path
+    logger.info(f"[retriever] Neo4j returned {len(chunks)} related articles, {len(paths)} paths")
+    return chunks, paths
 
 
-async def graph_search(seeds: list[RetrievedChunk], limit: int = RETRIEVAL_TOP_K) -> tuple[list[RetrievedChunk], list[GraphPathNode]]:
+async def graph_search(seeds: list[RetrievedChunk], limit: int = RETRIEVAL_TOP_K) -> tuple[list[RetrievedChunk], list[list[GraphPathNode]]]:
     """
     Expand the vector hits through the graph.
 
@@ -211,7 +213,7 @@ async def graph_search(seeds: list[RetrievedChunk], limit: int = RETRIEVAL_TOP_K
         limit: Max shared-entity expansions.
 
     Returns:
-        (related_chunks, graph_path)
+        (related_chunks, graph_paths) — paths strongest first
     """
     return await asyncio.to_thread(_graph_search_sync, seeds, limit)
 
@@ -230,7 +232,7 @@ async def retrieve(query: str, intent: Intent = Intent.QA) -> RetrievalResult:
         return RetrievalResult()
 
     vector_chunks = await vector_search(query)
-    graph_chunks, graph_path = await graph_search(vector_chunks)
+    graph_chunks, graph_paths = await graph_search(vector_chunks)
 
     # Corroboration: articles the graph reached from a *different* seed that
     # vector search also found independently.
@@ -248,7 +250,8 @@ async def retrieve(query: str, intent: Intent = Intent.QA) -> RetrievalResult:
 
     result = RetrievalResult(
         chunks=all_chunks,
-        graph_path=graph_path,
+        graph_path=graph_paths[0] if graph_paths else [],
+        graph_paths=graph_paths,
         vector_top_score=vector_chunks[0].score if vector_chunks else 0.0,
         graph_corroboration_count=corroboration,
     )

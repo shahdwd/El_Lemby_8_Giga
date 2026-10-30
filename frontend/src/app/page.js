@@ -2,6 +2,32 @@
 
 import { useState, useEffect, useRef } from "react";
 
+// The LLM answers in light Markdown (**bold**, "* " bullets, "## " headings).
+// Render just those as React elements — no HTML injection, no extra dependency.
+function renderInline(text) {
+  return text.split(/(\*\*[^*]+\*\*)/g).map((part, i) =>
+    part.startsWith("**") && part.endsWith("**") && part.length > 4
+      ? <strong key={i}>{part.slice(2, -2)}</strong>
+      : part
+  );
+}
+
+function renderMarkdownLite(text) {
+  return text.split("\n").map((line, i) => {
+    const bullet = line.match(/^(\s*)[*-]\s+(.*)$/);
+    const heading = line.match(/^#{1,4}\s+(.*)$/);
+    let content;
+    if (bullet) {
+      content = <>{bullet[1]}• {renderInline(bullet[2])}</>;
+    } else if (heading) {
+      content = <strong>{renderInline(heading[1])}</strong>;
+    } else {
+      content = renderInline(line);
+    }
+    return <span key={i}>{content}{"\n"}</span>;
+  });
+}
+
 export default function Home() {
   const [language, setLanguage] = useState("ar"); // "ar" | "en"
   const [messages, setMessages] = useState([]);
@@ -20,7 +46,7 @@ export default function Home() {
       title: "قانوني — مساعد القانون المصري",
       subtitle: "مستشار ذكي معزز ببحث متجهي ورسم بياني ونظام تدقيق الاقتباسات الفوري.",
       disclaimer: "تنبيه: هذا المساعد يوفر معلومات قانونية استرشادية فقط بناءً على النصوص المسترجعة، ولا يعتبر استشارة قانونية رسمية.",
-      placeholder: "اكتب سؤالك القانوني هنا (مثال: ما هي عقوبة السرقة؟)...",
+      placeholder: "اكتب سؤالك القانوني هنا (مثال: ما هي مدة الإجازة السنوية للعامل؟)...",
       send: "إرسال",
       newChat: "محادثة جديدة",
       confidence: "مستوى الثقة",
@@ -28,7 +54,14 @@ export default function Home() {
       graphPath: "مسار التحليل (Neo4j Graph)",
       verificationOutcome: "فحص Grounding",
       emptyStateTitle: "كيف يمكنني مساعدتك اليوم؟",
-      emptyStateSubtitle: "اسأل عن أي مادة في القانون المدني، العقوبات، أو القوانين المصرية الأخرى.",
+      emptyStateSubtitle: "اسأل عن أحكام قانون العمل الجديد، القانون المدني، أو قانون العقوبات.",
+      coverage: "القوانين المتاحة: قانون العمل رقم 14 لسنة 2025 (كامل) · القانون المدني (كامل) · قانون العقوبات (المواد 1–178) · قانون الضريبة على العقارات المبنية",
+      examples: [
+        "ما هي مدة الإجازة السنوية للعامل؟",
+        "هل يجوز لصاحب العمل فصل العامل دون إخطار؟",
+        "ما عقوبة الموظف العام الذي يقبل رشوة؟",
+        "ما هي شروط صحة العقد في القانون المدني؟",
+      ],
       uploadTitle: "تحميل وثيقة قانونية (Live Ingestion)",
       uploadSubtitle: "اسحب ملف PDF أو انقر لتحميله للتحليل والتلخيص",
       high: "عالي",
@@ -47,7 +80,7 @@ export default function Home() {
       title: "Qanony — Egyptian Law Assistant",
       subtitle: "Intelligent assistant enhanced with Vector-Graph RAG and deterministic citation safety checks.",
       disclaimer: "Disclaimer: This assistant provides general informational guidance based on retrieved texts. It does not constitute formal legal advice.",
-      placeholder: "Type your legal query here (e.g., What is the penalty for theft?)...",
+      placeholder: "Type your legal query here (e.g., How many days of annual leave does a worker get?)...",
       send: "Send",
       newChat: "New Chat",
       confidence: "Confidence Level",
@@ -55,7 +88,14 @@ export default function Home() {
       graphPath: "Explainability Path (Neo4j Graph)",
       verificationOutcome: "Grounding Verification",
       emptyStateTitle: "How can I help you today?",
-      emptyStateSubtitle: "Ask about any article in the Civil Code, Penal Code, or other Egyptian legislations.",
+      emptyStateSubtitle: "Ask about the new Labor Law, the Civil Code, or the Penal Code.",
+      coverage: "Laws covered: Labor Law No. 14 of 2025 (full) · Civil Code (full) · Penal Code (Articles 1–178) · Real Estate Tax Law",
+      examples: [
+        "How many days of annual leave does a worker get?",
+        "Can an employer fire a worker without notice?",
+        "What is the penalty for a public official who accepts a bribe?",
+        "What makes a contract valid under the Civil Code?",
+      ],
       uploadTitle: "Upload Legal Document (Live Ingestion)",
       uploadSubtitle: "Drag & drop PDF or click to upload for summary & explainability",
       high: "High",
@@ -74,13 +114,30 @@ export default function Home() {
 
   const activeTranslation = t[language];
 
-  // API Backend Base URL
-  const API_BASE = "http://localhost:8000";
+  // API Backend Base URL (set NEXT_PUBLIC_API_BASE when deploying; inlined at build time)
+  const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
+
+  // Messages of sessions that aren't on screen, so switching back restores them
+  const sessionMessagesRef = useRef({});
+
+  const saveCurrentSession = () => {
+    if (sessionId) sessionMessagesRef.current[sessionId] = messages;
+  };
+
+  const switchSession = (sessId) => {
+    if (sessId === sessionId) return;
+    saveCurrentSession();
+    setSessionId(sessId);
+    setMessages(sessionMessagesRef.current[sessId] || []);
+    setSidebarOpen(false);
+  };
 
   // Initialize new session
   const startNewChat = () => {
+    saveCurrentSession();
     setMessages([]);
     setUploadedDoc(null);
+    setSidebarOpen(false);
     const newSessionId = `session-${Math.random().toString(36).substr(2, 9)}`;
     setSessionId(newSessionId);
 
@@ -101,11 +158,11 @@ export default function Home() {
   }, [messages, isLoading]);
 
   // Handle Form Submit
-  const handleSend = async (e) => {
+  const handleSend = async (e, text) => {
     if (e) e.preventDefault();
-    if (!inputValue.trim() || isLoading) return;
+    const userMessage = text ?? inputValue;
+    if (!userMessage.trim() || isLoading) return;
 
-    const userMessage = inputValue;
     setInputValue("");
     setIsLoading(true);
 
@@ -170,6 +227,8 @@ export default function Home() {
   const deleteSession = (sessId, e) => {
     e.stopPropagation();
     setSessions(prev => prev.filter(s => s !== sessId));
+    delete sessionMessagesRef.current[sessId];
+    fetch(`${API_BASE}/sessions/${sessId}`, { method: "DELETE" }).catch(() => {});
     if (sessionId === sessId) {
       startNewChat();
     }
@@ -251,10 +310,7 @@ export default function Home() {
             <div
               key={sess}
               className={`session-item ${sess === sessionId ? "active" : ""}`}
-              onClick={() => {
-                setSessionId(sess);
-                setMessages([]);
-              }}
+              onClick={() => switchSession(sess)}
             >
               <span className="session-title">
                 💬 {activeTranslation.session} ({sess.replace("session-", "")})
@@ -275,13 +331,20 @@ export default function Home() {
             <div className="brand-logo">⚖️</div>
             <div>
               <h1 className="brand-title">{activeTranslation.title}</h1>
-              <p style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
+              <p className="brand-subtitle" style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
                 {activeTranslation.subtitle}
               </p>
             </div>
           </div>
 
           <div className="header-actions">
+            <button
+              className="menu-toggle"
+              aria-label={language === "ar" ? "القائمة" : "Menu"}
+              onClick={() => setSidebarOpen(open => !open)}
+            >
+              ☰
+            </button>
             {/* Language toggle switch */}
             <div
               className="toggle-lang"
@@ -306,6 +369,14 @@ export default function Home() {
               <div className="empty-state-icon">⚖️</div>
               <h2 className="empty-state-title">{activeTranslation.emptyStateTitle}</h2>
               <p className="empty-state-subtitle">{activeTranslation.emptyStateSubtitle}</p>
+              <div className="example-questions">
+                {activeTranslation.examples.map((q) => (
+                  <button key={q} className="example-question" onClick={() => handleSend(null, q)}>
+                    {q}
+                  </button>
+                ))}
+              </div>
+              <p className="coverage-note">{activeTranslation.coverage}</p>
             </div>
           ) : (
             messages.map((msg, index) => {
@@ -322,7 +393,9 @@ export default function Home() {
                     <strong>{msg.role === "user" ? (language === "ar" ? "أنت" : "You") : (language === "ar" ? "المساعد القانوني" : "Legal Assistant")}</strong>
                   </div>
                   <div className="message-bubble">
-                    <div style={{ whiteSpace: "pre-wrap" }}>{msg.content}</div>
+                    <div style={{ whiteSpace: "pre-wrap" }}>
+                      {msg.role === "assistant" ? renderMarkdownLite(msg.content) : msg.content}
+                    </div>
 
                     {/* Assistant metadata indicators */}
                     {msg.role === "assistant" && !msg.error && (
@@ -357,10 +430,11 @@ export default function Home() {
                               {msg.graphPath.map((node, nIdx) => (
                                 <div key={nIdx} style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                                   <span className={`graph-node ${node.label.toLowerCase()}`}>
-                                    {node.label === "Law" ? "📜" : "📌"} {node.name}
+                                    {node.label === "Law" ? "📜" : node.label === "Article" ? "📌" : "🏷️"} {node.name}
                                   </span>
                                   {nIdx < msg.graphPath.length - 1 && (
                                     <span className="graph-arrow">
+                                      {node.relationship && <span className="graph-rel">{node.relationship}</span>}
                                       {language === "ar" ? "◀" : "▶"}
                                     </span>
                                   )}

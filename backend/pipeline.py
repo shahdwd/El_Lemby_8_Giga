@@ -13,11 +13,13 @@ from backend.models import (
     Citation,
     ConfidenceLevel,
     CitationCheckOutcome,
+    GraphPathNode,
     Intent,
+    RetrievalResult,
 )
 from backend.planner import classify_intent
 from backend.translation import ensure_arabic_query
-from backend.retriever import retrieve
+from backend.retriever import retrieve, article_node_name
 from backend.context_fusion import fuse_context
 from backend.response_generator import generate_response
 from backend.citation_check import (
@@ -34,6 +36,22 @@ OFF_TOPIC_MESSAGE = {
     "ar": "أنا مساعد متخصص في القانون المصري فقط. يرجى طرح سؤال قانوني وسأساعدك بالاستناد إلى نصوص القانون.",
     "en": "I can only help with questions about Egyptian law. Please ask a legal question and I'll answer from the legal texts.",
 }
+
+
+def _pick_graph_path(retrieval: RetrievalResult, citations: list[Citation]) -> list[GraphPathNode]:
+    """
+    Show the graph path that explains the answer: prefer one passing through an
+    article the answer cites, then one inside a cited law, else the strongest.
+    """
+    cited_articles = {article_node_name(c.law_name, c.article_id) for c in citations}
+    cited_laws = {c.law_name for c in citations}
+    for path in retrieval.graph_paths:
+        if any(n.label == "Article" and n.name in cited_articles for n in path):
+            return path
+    for path in retrieval.graph_paths:
+        if path and path[0].label == "Law" and path[0].name in cited_laws:
+            return path
+    return retrieval.graph_path
 
 
 async def handle_chat(message: str, session_id: str, language: str = "ar") -> ChatResponse:
@@ -166,7 +184,7 @@ async def handle_chat(message: str, session_id: str, language: str = "ar") -> Ch
     result = ChatResponse(
         answer=response_text,
         citations=final_citations,
-        graph_path=fused.graph_path,
+        graph_path=_pick_graph_path(fused, final_citations),
         confidence=confidence,
         citation_check_outcome=citation_outcome,
         session_id=session_id,

@@ -476,6 +476,17 @@ body {
 
 .graph-arrow {
   color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.graph-rel {
+  font-family: var(--font-english);
+  font-size: 0.65rem;
+  letter-spacing: 0.02em;
+  color: var(--accent-primary);
+  direction: ltr;
 }
 
 /* Input Area styling */
@@ -626,6 +637,40 @@ body {
   line-height: 1.6;
 }
 
+.example-questions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+  width: 100%;
+  margin-top: 24px;
+}
+
+.example-question {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 12px 14px;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  text-align: start;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.example-question:hover {
+  border-color: var(--accent-primary);
+  background: var(--bg-tertiary);
+}
+
+.coverage-note {
+  margin-top: 20px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
 /* Document Upload component in sidebar */
 .upload-box {
   border: 2px dashed var(--border-color);
@@ -688,5 +733,32 @@ body {
   }
   .sidebar.open {
     transform: translateX(0);
+  }
+}
+
+/* Opens the off-canvas sidebar; only shown on narrow screens */
+.menu-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+
+@media (max-width: 768px) {
+  .menu-toggle {
+    display: inline-flex;
+  }
+  .brand-subtitle {
+    display: none;
+  }
+  .header-actions {
+    gap: 8px;
   }
 }

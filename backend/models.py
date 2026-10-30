@@ -60,6 +60,9 @@ class RetrievalResult:
     """The full output of the retriever — vector + graph combined."""
     chunks: list[RetrievedChunk] = field(default_factory=list)
     graph_path: list[GraphPathNode] = field(default_factory=list)
+    # Every path the graph search found, strongest first; the pipeline swaps
+    # graph_path for one that runs through an article the answer actually cites.
+    graph_paths: list[list[GraphPathNode]] = field(default_factory=list)
     vector_top_score: float = 0.0
     graph_corroboration_count: int = 0  # overlap between vector & graph hits
 

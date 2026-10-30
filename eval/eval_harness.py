@@ -19,23 +19,23 @@ API_URL = "http://localhost:8000/chat"
 # Sample Egyptian legal QA test cases
 TEST_CASES = [
     {
-        "query": "ما هي عقوبة السرقة البسيطة في قانون العقوبات المصري؟",
-        "expected_article": "318",
+        "query": "ما هي مدة الإجازة السنوية للعامل في قانون العمل؟",
+        "expected_article": "125",
         "language": "ar"
     },
     {
-        "query": "ما هي عقوبة السرقات التي تقع في الطرق العامة؟",
-        "expected_article": "315",
+        "query": "ما عقوبة الموظف العام الذي يقبل رشوة؟",
+        "expected_article": "104",
         "language": "ar"
     },
     {
-        "query": "ما هو تعريف السارق في القانون المصري؟",
-        "expected_article": "318",
+        "query": "ما هي شروط صحة العقد في القانون المدني؟",
+        "expected_article": "95",
         "language": "ar"
     },
     {
-        "query": "What is the penalty for simple theft under Egyptian law?",
-        "expected_article": "318",
+        "query": "Can an employer fire a worker without notice under the Egyptian labor law?",
+        "expected_article": "164",
         "language": "en"
     }
 ]

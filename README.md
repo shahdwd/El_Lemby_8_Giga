@@ -49,7 +49,7 @@ python -m backend.ingestion.load_qdrant
 **Request:**
 ```json
 {
-  "message": "ما هي عقوبة السرقة في القانون المصري؟",
+  "message": "ما هي مدة الإجازة السنوية للعامل؟",
   "session_id": "optional-uuid",
   "language": "ar"
 }
@@ -58,9 +58,9 @@ python -m backend.ingestion.load_qdrant
 **Response:**
 ```json
 {
-  "answer": "وفقاً للمادة 318 من قانون العقوبات...",
-  "citations": [{"law_name": "قانون العقوبات", "article_id": "318", "text_snippet": "..."}],
-  "graph_path": [{"node_id": "1", "label": "Law", "name": "قانون العقوبات", "relationship": "CONTAINS"}],
+  "answer": "وفقاً للمادة 125 من قانون العمل، يحصل العامل على إجازة سنوية مدتها خمسة عشر يوماً...",
+  "citations": [{"law_name": "قانون رقم ١٤ لسنة ٢٠٢٥ بإصدار قانون العمل", "article_id": "125", "text_snippet": "..."}],
+  "graph_path": [{"node_id": "1", "label": "Law", "name": "قانون رقم ١٤ لسنة ٢٠٢٥ بإصدار قانون العمل", "relationship": "CONTAINS"}],
   "confidence": "high",
   "citation_check_outcome": "passed",
   "session_id": "uuid",
