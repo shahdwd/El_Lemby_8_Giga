@@ -70,6 +70,7 @@ class ChatResponseBody(BaseModel):
     answer: str
     citations: list[dict] = []
     graph_path: list[dict] = []
+    agent_steps: list[dict] = []
     confidence: str = "medium"
     citation_check_outcome: str = "passed"
     session_id: str = ""
@@ -93,8 +94,7 @@ async def health():
 async def chat(body: ChatRequestBody):
     """
     Main chat endpoint.
-    Flow: guardrails → pipeline (planner → translation → retriever →
-          context fusion → LLM → citation check) → response.
+    Flow: guardrails → pipeline (planner → research agent → citation check) → response.
     """
     # Assign session ID if not provided
     session_id = body.session_id or str(uuid.uuid4())
@@ -135,6 +135,10 @@ async def chat(body: ChatRequestBody):
         graph_path=[
             {"node_id": n.node_id, "label": n.label, "name": n.name, "relationship": n.relationship}
             for n in result.graph_path
+        ],
+        agent_steps=[
+            {"tool": s.tool, "input": s.input, "result": s.result}
+            for s in result.agent_steps
         ],
         confidence=result.confidence.value,
         citation_check_outcome=result.citation_check_outcome.value,

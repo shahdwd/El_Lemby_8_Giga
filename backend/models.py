@@ -86,11 +86,20 @@ class Citation:
 
 
 @dataclass
+class AgentStep:
+    """One tool call the research agent made, for display and logs."""
+    tool: str       # "search_law" | "get_article" | "explore_graph"
+    input: str
+    result: str
+
+
+@dataclass
 class ChatResponse:
     """Outgoing response to the frontend."""
     answer: str
     citations: list[Citation] = field(default_factory=list)
     graph_path: list[GraphPathNode] = field(default_factory=list)
+    agent_steps: list[AgentStep] = field(default_factory=list)
     confidence: ConfidenceLevel = ConfidenceLevel.MEDIUM
     citation_check_outcome: CitationCheckOutcome = CitationCheckOutcome.PASSED
     session_id: str = ""

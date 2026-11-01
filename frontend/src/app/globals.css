@@ -489,6 +489,26 @@ body {
   direction: ltr;
 }
 
+.agent-steps {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.agent-steps summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.agent-steps ol {
+  margin-top: 8px;
+  padding-inline-start: 20px;
+  line-height: 1.7;
+}
+
+.agent-step-result {
+  color: var(--text-muted);
+}
+
 /* Input Area styling */
 .input-panel {
   padding: 24px;

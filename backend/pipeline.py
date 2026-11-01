@@ -1,15 +1,22 @@
 """
 Pipeline Orchestrator — the core of the system.
-Plain Python async function, no framework. Calls components in sequence:
+Plain Python async function, no framework:
 
-  Planner → Translation → Retriever → Context Fusion → LLM → Citation Check → Response
+  Planner → Research agent (LLM + tools) → Citation Check → Confidence → Response
 
-This replaces LangGraph with a simple, linear, debuggable pipeline.
+The agent decides what to look up; the checks after it are deterministic and it
+can't skip them. If the agent fails, the fixed pipeline answers instead:
+
+  Translation → Retriever → Context Fusion → LLM
 """
 
 import asyncio
 import logging
+from backend.agent import run_agent
+from backend.answer_verifier import verify_answer
+from backend.config import AGENT_ENABLED
 from backend.models import (
+    AgentStep,
     ChatResponse,
     Citation,
     ConfidenceLevel,
@@ -38,6 +45,11 @@ OFF_TOPIC_MESSAGE = {
     "en": "I can only help with questions about Egyptian law. Please ask a legal question and I'll answer from the legal texts.",
 }
 
+UNVERIFIED_WARNING = {
+    "ar": "⚠️ تنبيه: قد لا ينطبق أحد المراجع التالية تماماً على هذه الحالة، فيرجى مراجعة النص.",
+    "en": "⚠️ Warning: one of the references below may not fully apply here, so please check its text.",
+}
+
 
 def _document_paragraphs(document: str, limit: int = 15) -> list[str]:
     """Substantive lines of an uploaded document (clauses), skipping headers and signatures."""
@@ -60,20 +72,71 @@ def _pick_graph_path(retrieval: RetrievalResult, citations: list[Citation]) -> l
     return retrieval.graph_path
 
 
+def _fallback_text(retrieval: RetrievalResult, language: str) -> str:
+    """Transparent fallback: no synthesized answer, just the articles found."""
+    source_list = "\n".join(
+        f"• {c.law_name} — المادة {c.article_id}:\n  {c.text[:200]}"
+        for c in retrieval.chunks
+    )
+    fallback_msg = (
+        "لم أتمكن من تقديم إجابة موثقة بالكامل. "
+        "فيما يلي المواد القانونية المسترجعة ذات الصلة:\n\n"
+        if language == "ar"
+        else "I could not generate a fully grounded answer. "
+        "Here are the relevant retrieved legal articles:\n\n"
+    )
+    return fallback_msg + source_list
+
+
+async def _fixed_answer(
+    message: str,
+    intent: Intent,
+    language: str,
+    history: list[dict] | None,
+    document: str | None,
+) -> tuple[str, RetrievalResult]:
+    """The non-agent path: retrieve once with fixed steps, then answer."""
+    # Translation and the statutory-wording rewrite are independent cheap LLM
+    # calls — run them together to keep latency at one round trip.
+    (arabic_query, was_translated), statutory_query = await asyncio.gather(
+        ensure_arabic_query(message),
+        rewrite_for_retrieval(message),
+    )
+    if was_translated:
+        logger.info(f"[pipeline] translated query to Arabic")
+
+    extra_queries = [statutory_query] if statutory_query else []
+    if document:
+        extra_queries += _document_paragraphs(document)
+    raw_retrieval = await retrieve(arabic_query, intent=intent, extra_queries=extra_queries)
+    logger.info(f"[pipeline] retrieved {len(raw_retrieval.chunks)} raw chunks")
+
+    fused = fuse_context(raw_retrieval)
+    logger.info(f"[pipeline] fused to {len(fused.chunks)} chunks")
+
+    response_text = await generate_response(
+        query=message,
+        retrieval=fused,
+        language=language,
+        history=history,
+        pinned_document=document,
+    )
+    return response_text, fused
+
+
 async def handle_chat(message: str, session_id: str, language: str = "ar") -> ChatResponse:
     """
     Main pipeline orchestrator.
-    
+
     Flow:
-    1. Planner — classify intent
-    2. Translation — ensure Arabic query for retrieval  
-    3. Retriever — Qdrant + Neo4j
-    4. Context Fusion — merge, dedupe, cap
-    5. Legal Reasoning + Response Generation — single LLM call
-    6. Citation Check — deterministic grounding verification
-    7. Fallback flow (if citation check fails)
-    8. Confidence score derivation
-    9. Session update
+    1. Planner — classify intent; off-topic questions stop here
+    2. Research agent — tool-calling loop that reads the law and answers
+       (fixed retrieval pipeline if the agent fails or AGENT_ENABLED is off)
+    3. Citation Check — every citation must be an article the answer's context holds
+    4. Answer Verification — each cited article must say what it's cited for
+       (failing 3 or 4 leads to a patch, a rewrite, then a transparent fallback)
+    5. Confidence score derivation
+    6. Session update
     """
 
     logger.info(f"[pipeline] START session={session_id} lang={language}")
@@ -81,13 +144,7 @@ async def handle_chat(message: str, session_id: str, language: str = "ar") -> Ch
     # ── 1. Planner ───────────────────────────────────────────────────
     session = session_store.get_or_create(session_id)
     has_document = session.pinned_document is not None
-    # Planner, translation and the statutory-wording rewrite are independent
-    # cheap LLM calls — run them together to keep latency at one round trip.
-    intent, (arabic_query, was_translated), statutory_query = await asyncio.gather(
-        classify_intent(message, has_document=has_document),
-        ensure_arabic_query(message),
-        rewrite_for_retrieval(message),
-    )
+    intent = await classify_intent(message, has_document=has_document)
     logger.info(f"[pipeline] intent={intent.value}")
 
     if intent == Intent.OFF_TOPIC:
@@ -102,35 +159,29 @@ async def handle_chat(message: str, session_id: str, language: str = "ar") -> Ch
             language=language,
         )
 
-    # ── 2. Translation (ran above, alongside the planner) ────────────
-    if was_translated:
-        logger.info(f"[pipeline] translated query to Arabic")
+    # ── 2. Research + Answer ─────────────────────────────────────────
+    history = session_store.get_history_for_prompt(session_id) or None
+    document = session.pinned_document
+    response_text = None
+    agent_steps: list[AgentStep] = []
+    if AGENT_ENABLED:
+        try:
+            agent_result = await run_agent(
+                query=message,
+                language=language,
+                history=history,
+                pinned_document=document,
+                # A document's clauses say which laws apply better than the
+                # question does; the agent starts with those searches done.
+                document_queries=[message, *_document_paragraphs(document)] if document else None,
+            )
+            response_text, fused, agent_steps = agent_result.answer, agent_result.retrieval, agent_result.steps
+        except Exception as e:
+            logger.error(f"[pipeline] agent failed, using fixed pipeline: {e}", exc_info=True)
+    if response_text is None:
+        response_text, fused = await _fixed_answer(message, intent, language, history, document)
 
-    # ── 3. Retrieval ─────────────────────────────────────────────────
-    extra_queries = [statutory_query] if statutory_query else []
-    if session.pinned_document:
-        # Questions about an uploaded document ("is this contract legal?") say
-        # little about which laws apply — its clauses do. Search each one too
-        # (the embedding model only reads ~128 tokens at a time).
-        extra_queries += _document_paragraphs(session.pinned_document)
-    raw_retrieval = await retrieve(arabic_query, intent=intent, extra_queries=extra_queries)
-    logger.info(f"[pipeline] retrieved {len(raw_retrieval.chunks)} raw chunks")
-
-    # ── 4. Context Fusion ────────────────────────────────────────────
-    fused = fuse_context(raw_retrieval)
-    logger.info(f"[pipeline] fused to {len(fused.chunks)} chunks")
-
-    # ── 5. Legal Reasoning + Response Generation ─────────────────────
-    history = session_store.get_history_for_prompt(session_id)
-    response_text = await generate_response(
-        query=message,
-        retrieval=fused,
-        language=language,
-        history=history if history else None,
-        pinned_document=session.pinned_document,
-    )
-
-    # ── 6. Citation Check ────────────────────────────────────────────
+    # ── 3. Citation Check ────────────────────────────────────────────
     all_citations, grounded, ungrounded = check_citations(response_text, fused)
     citation_outcome = CitationCheckOutcome.PASSED
 
@@ -153,8 +204,8 @@ async def handle_chat(message: str, session_id: str, language: str = "ar") -> Ch
                 query=message,
                 retrieval=fused,
                 language=language,
-                history=history if history else None,
-                pinned_document=session.pinned_document,
+                history=history,
+                pinned_document=document,
                 is_retry=True,
             )
             all_citations, grounded, ungrounded = check_citations(response_text, fused)
@@ -167,28 +218,64 @@ async def handle_chat(message: str, session_id: str, language: str = "ar") -> Ch
                 logger.warning("[pipeline] citation check: FALLBACK — showing raw sources")
                 citation_outcome = CitationCheckOutcome.FALLBACK
 
-                # Build transparent fallback response
-                source_list = "\n".join(
-                    f"• {c.law_name} — المادة {c.article_id}:\n  {c.text[:200]}"
-                    for c in fused.chunks
-                )
-                fallback_msg = (
-                    "لم أتمكن من تقديم إجابة موثقة بالكامل. "
-                    "فيما يلي المواد القانونية المسترجعة ذات الصلة:\n\n"
-                    if language == "ar"
-                    else "I could not generate a fully grounded answer. "
-                    "Here are the relevant retrieved legal articles:\n\n"
-                )
-                response_text = fallback_msg + source_list
+                response_text = _fallback_text(fused, language)
+                grounded = []
 
-    # ── 7. Confidence Score ──────────────────────────────────────────
+    # ── 3b. Answer Verification ──────────────────────────────────────
+    # The citation check proved the cited articles exist; this checks they say
+    # what the answer uses them for. One rewrite, then the honest fallback.
+    corrected = False
+    unverified = False
+    if grounded:
+        verdict = await verify_answer(message, response_text, grounded, fused)
+        if verdict and not verdict.ok:
+            logger.warning(f"[pipeline] verifier: {verdict.problem}")
+            corrected = True
+            citation_outcome = CitationCheckOutcome.RETRIED
+            response_text = await generate_response(
+                query=message,
+                retrieval=fused,
+                language=language,
+                history=history,
+                pinned_document=document,
+                correction=verdict.problem,
+            )
+            _, grounded, ungrounded = check_citations(response_text, fused)
+            patched_text = strip_ungrounded_claims(response_text, ungrounded) if ungrounded else response_text
+
+            second = None
+            if patched_text and grounded:
+                response_text = patched_text
+                _, grounded, _ = check_citations(response_text, fused)
+                second = await verify_answer(message, response_text, grounded, fused) if grounded else None
+            elif patched_text:
+                response_text = patched_text
+
+            still_misused = second is not None and not second.ok
+            if document and patched_text and still_misused:
+                # A clause-by-clause review stays useful with one weak point, and a
+                # list of articles wouldn't replace it: keep it, flagged.
+                logger.warning("[pipeline] verifier: still misused after rewrite — keeping document review with a warning")
+                unverified = True
+                response_text = f"{UNVERIFIED_WARNING['ar' if language == 'ar' else 'en']} {second.problem}\n\n{response_text}"
+            elif not patched_text or still_misused:
+                logger.warning("[pipeline] verifier: still misused after rewrite — showing raw sources")
+                citation_outcome = CitationCheckOutcome.FALLBACK
+                response_text = _fallback_text(fused, language)
+                grounded = []
+
+    # ── 4. Confidence Score ──────────────────────────────────────────
     confidence = compute_confidence(fused, citation_outcome, grounded_citation_count=len(grounded))
+    if corrected and confidence == ConfidenceLevel.HIGH:
+        confidence = ConfidenceLevel.MEDIUM  # its first attempt misused an article
+    if unverified:
+        confidence = ConfidenceLevel.LOW
 
-    # ── 8. Update Session ────────────────────────────────────────────
+    # ── 5. Update Session ────────────────────────────────────────────
     session_store.add_turn(session_id, "user", message)
     session_store.add_turn(session_id, "assistant", response_text)
 
-    # ── 9. Build Response ────────────────────────────────────────────
+    # ── 6. Build Response ────────────────────────────────────────────
     final_citations = [
         Citation(
             law_name=c.law_name,
@@ -202,6 +289,7 @@ async def handle_chat(message: str, session_id: str, language: str = "ar") -> Ch
         answer=response_text,
         citations=final_citations,
         graph_path=_pick_graph_path(fused, final_citations),
+        agent_steps=agent_steps,
         confidence=confidence,
         citation_check_outcome=citation_outcome,
         session_id=session_id,

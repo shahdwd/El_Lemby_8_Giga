@@ -58,6 +58,41 @@ async def call_llm(
     return content
 
 
+async def call_llm_with_tools(
+    messages: list[dict],
+    tools: list[dict],
+    tool_choice: str = "auto",
+    temperature: float = 0.2,
+    max_tokens: int = 2048,
+) -> dict:
+    """
+    Tool-calling chat completion on the main model. Returns the assistant message
+    as sent, so it can be appended to the conversation unchanged; check "tool_calls".
+    """
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://qanony.vercel.app",
+        "X-Title": "Qanony - Egyptian Law AI Assistant",
+    }
+    payload = {
+        "model": LLM_MODEL,
+        "messages": messages,
+        "tools": tools,
+        "tool_choice": tool_choice,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+
+    logger.info(f"[llm] tool call model={LLM_MODEL} msgs={len(messages)} tool_choice={tool_choice}")
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(OPENROUTER_BASE_URL, json=payload, headers=headers)
+        response.raise_for_status()
+
+    return response.json()["choices"][0]["message"]
+
+
 async def call_llm_cheap(
     messages: list[dict],
     temperature: float = 0.2,

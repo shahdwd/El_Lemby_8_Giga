@@ -28,12 +28,18 @@ def compute_confidence(
     - Qdrant similarity score of top hit
     - Number of corroborating graph hits (vector ∩ graph overlap)
     - Citation check outcome (passed / patched / retried / fallback)
-      — an answer that cites nothing earns no citation points: "passed"
-        only means nothing was wrong, not that anything was grounded.
+      — "passed" only means nothing was wrong, so an answer that cites
+        nothing is always low, whatever the retrieval signals say.
 
     Returns:
         ConfidenceLevel.HIGH / MEDIUM / LOW
     """
+    # An answer that cites nothing has nothing to be confident about, however
+    # good the retrieval looked.
+    if grounded_citation_count == 0:
+        logger.info("[confidence] level=low (no grounded citations)")
+        return ConfidenceLevel.LOW
+
     score = 0.0
 
     # ── Factor 1: Vector similarity (0–40 points) ────────────────────
@@ -54,8 +60,6 @@ def compute_confidence(
 
     # ── Factor 3: Citation check outcome (0–30 points) ───────────────
     match citation_outcome:
-        case _ if grounded_citation_count == 0:
-            score += 0
         case CitationCheckOutcome.PASSED:
             score += 30
         case CitationCheckOutcome.PATCHED:

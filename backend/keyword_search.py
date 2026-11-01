@@ -103,16 +103,30 @@ def get_index() -> KeywordIndex:
     return _index
 
 
+def _to_chunk(record: dict, score: float) -> RetrievedChunk:
+    return RetrievedChunk(
+        text=record["text"],
+        law_name=record["law_name"],
+        article_id=record["article_id"],
+        categories=record.get("categories", []),
+        source="keyword",
+        score=score,
+    )
+
+
 def keyword_search(query: str, top_k: int = 5) -> list[RetrievedChunk]:
     """BM25 search; RetrievedChunk.score is the BM25 score (not comparable to cosine scores)."""
-    return [
-        RetrievedChunk(
-            text=r["text"],
-            law_name=r["law_name"],
-            article_id=r["article_id"],
-            categories=r.get("categories", []),
-            source="keyword",
-            score=s,
-        )
-        for r, s in get_index().search(query, top_k)
-    ]
+    return [_to_chunk(r, s) for r, s in get_index().search(query, top_k)]
+
+
+def find_article(law_name: str, article_id: str) -> RetrievedChunk | None:
+    """One article's full text by exact law name and canonical article id."""
+    for r in get_index().records:
+        if r["law_name"] == law_name and r["article_id"] == article_id:
+            return _to_chunk(r, 0.5)
+    return None
+
+
+def law_names() -> list[str]:
+    """Names of the laws in the corpus, in file order."""
+    return list(dict.fromkeys(r["law_name"] for r in get_index().records))

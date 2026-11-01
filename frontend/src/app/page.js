@@ -53,6 +53,8 @@ export default function Home() {
       confidence: "مستوى الثقة",
       citations: "المراجع والاقتباسات القانونية",
       graphPath: "مسار التحليل (Neo4j Graph)",
+      agentSteps: "خطوات البحث",
+      tools: { search_law: "بحث في القوانين", get_article: "فتح مادة", explore_graph: "استكشاف المواد المرتبطة" },
       verificationOutcome: "فحص Grounding",
       emptyStateTitle: "كيف يمكنني مساعدتك اليوم؟",
       emptyStateSubtitle: "اسأل عن أحكام قانون العمل الجديد، القانون المدني، أو قانون العقوبات.",
@@ -88,6 +90,8 @@ export default function Home() {
       confidence: "Confidence Level",
       citations: "Legal References & Citations",
       graphPath: "Explainability Path (Neo4j Graph)",
+      agentSteps: "Research steps",
+      tools: { search_law: "Searched the law", get_article: "Opened article", explore_graph: "Explored related articles" },
       verificationOutcome: "Grounding Verification",
       emptyStateTitle: "How can I help you today?",
       emptyStateSubtitle: "Ask about the new Labor Law, the Civil Code, or the Penal Code.",
@@ -201,6 +205,7 @@ export default function Home() {
           content: data.answer,
           citations: data.citations || [],
           graphPath: data.graph_path || [],
+          agentSteps: data.agent_steps || [],
           confidence: data.confidence || "medium",
           outcome: data.citation_check_outcome || "passed",
         }
@@ -447,6 +452,23 @@ export default function Home() {
                             ✅ {activeTranslation.verificationOutcome}: {activeTranslation[msg.outcome]}
                           </span>
                         </div>
+
+                        {/* What the research agent looked up, in order */}
+                        {msg.agentSteps && msg.agentSteps.length > 0 && (
+                          <details className="agent-steps">
+                            <summary>
+                              🔎 {activeTranslation.agentSteps} ({msg.agentSteps.length})
+                            </summary>
+                            <ol>
+                              {msg.agentSteps.map((step, sIdx) => (
+                                <li key={sIdx}>
+                                  <strong>{activeTranslation.tools[step.tool] || step.tool}:</strong> {step.input}
+                                  <span className="agent-step-result"> → {step.result}</span>
+                                </li>
+                              ))}
+                            </ol>
+                          </details>
+                        )}
 
                         {/* Explainability path (Neo4j graph nodes) */}
                         {msg.graphPath && msg.graphPath.length > 0 && (

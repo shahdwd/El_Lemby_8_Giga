@@ -33,6 +33,8 @@ OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
 LLM_MODEL: str = os.getenv("LLM_MODEL", "google/gemini-2.5-flash")
 LLM_MODEL_CHEAP: str = os.getenv("LLM_MODEL_CHEAP", LLM_MODEL)
 LLM_MODEL_LITE: str = os.getenv("LLM_MODEL_LITE", "google/gemini-2.5-flash-lite")
+# Answer through the research agent; "false" uses the fixed retrieval pipeline.
+AGENT_ENABLED: bool = os.getenv("AGENT_ENABLED", "true").lower() != "false"
 
 # ── Qdrant ───────────────────────────────────────────────────────────────
 QDRANT_URL: str = os.getenv("QDRANT_URL", "")

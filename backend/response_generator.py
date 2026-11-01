@@ -17,6 +17,7 @@ def build_response_prompt(
     history: list[dict] | None = None,
     pinned_document: str | None = None,
     is_retry: bool = False,
+    correction: str | None = None,
 ) -> list[dict]:
     """
     Build the full prompt for the merged reasoning + response LLM call.
@@ -28,6 +29,7 @@ def build_response_prompt(
         history: Conversation history as list of {"role", "content"} dicts.
         pinned_document: Content of uploaded document, if any.
         is_retry: If True, uses a stricter prompt (for citation check retry).
+        correction: What the verifier found wrong with the previous answer, if anything.
     """
     # Format retrieved chunks as context
     context_lines = []
@@ -54,6 +56,14 @@ def build_response_prompt(
             "\n\n⚠️ CRITICAL: A previous response cited articles NOT present in the context. "
             "You MUST ONLY cite articles that appear in the context below. "
             "If you are not sure about a citation, say so explicitly rather than guessing."
+        )
+
+    if correction:
+        strictness_note += (
+            f"\n\n⚠️ CRITICAL: A previous answer misused a citation: {correction} "
+            "Do not repeat this. If the context doesn't contain an article that governs the "
+            "question, say plainly that this part of the law isn't in the available data, and "
+            "mention any related article only as related, never as the answer."
         )
 
     lang_instruction = (
@@ -100,6 +110,7 @@ async def generate_response(
     history: list[dict] | None = None,
     pinned_document: str | None = None,
     is_retry: bool = False,
+    correction: str | None = None,
 ) -> str:
     """
     Generate a legal response using the merged reasoning + response call.
@@ -114,6 +125,7 @@ async def generate_response(
         history=history,
         pinned_document=pinned_document,
         is_retry=is_retry,
+        correction=correction,
     )
 
     response = await call_llm(messages, temperature=0.3, max_tokens=2048)

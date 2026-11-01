@@ -253,7 +253,7 @@ async def _hybrid_rank(query: str, per_query: int) -> tuple[list[RetrievedChunk]
     return [chunks[k] for k in ranked], (vector_hits[0].score if vector_hits else 0.0)
 
 
-async def _hybrid_search(queries: list[str], per_query: int, top_k: int) -> tuple[list[RetrievedChunk], float]:
+async def hybrid_search(queries: list[str], per_query: int, top_k: int) -> tuple[list[RetrievedChunk], float]:
     """
     Hybrid-rank every query, then merge round-robin (every query's #1, then every
     #2, ...) so each clause of a document gets its best match in, rather than
@@ -306,7 +306,7 @@ async def retrieve(query: str, intent: Intent = Intent.QA, extra_queries: list[s
         # A document: search each clause and keep ~its top 2 (typically the vector
         # and the keyword winner); context fusion's token budget caps the total.
         per_query, top_k = 3, 2 * len(queries)
-    seed_chunks, vector_top = await _hybrid_search(queries, per_query=per_query, top_k=top_k)
+    seed_chunks, vector_top = await hybrid_search(queries, per_query=per_query, top_k=top_k)
     graph_chunks, graph_paths = await graph_search(seed_chunks)
 
     # Corroboration: articles the graph reached from a *different* seed that
