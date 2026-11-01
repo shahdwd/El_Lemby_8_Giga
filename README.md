@@ -65,6 +65,7 @@ A sample contract with two clauses that break the Labor Law (7 days of annual le
   "answer": "وفقاً للمادة 125 من قانون العمل، يحصل العامل على إجازة سنوية مدتها خمسة عشر يوماً...",
   "citations": [{"law_name": "قانون رقم ١٤ لسنة ٢٠٢٥ بإصدار قانون العمل", "article_id": "125", "text_snippet": "..."}],
   "graph_path": [{"node_id": "1", "label": "Law", "name": "قانون رقم ١٤ لسنة ٢٠٢٥ بإصدار قانون العمل", "relationship": "CONTAINS"}],
+  "agent_steps": [{"tool": "search_law", "input": "...", "result": "..."}],
   "confidence": "high",
   "citation_check_outcome": "passed",
   "session_id": "uuid",
@@ -77,12 +78,15 @@ A sample contract with two clauses that break the Labor Law (7 days of annual le
 
 ```
 User → React/Next.js → FastAPI → Pipeline Orchestrator
-  ├── Planner (LLM) → Translation (LLM) → Retriever (Qdrant + Neo4j)
-  → Context Fusion → Legal Reasoning (LLM) → Citation Check → Response
+  ├── Guardrails → Planner (LLM)
+  → Research agent (LLM + tools: search_law, get_article, explore_graph)
+  → Citation Check → Answer Verifier (LLM) → Response
 ```
 
+- **Research agent** (`backend/agent.py`): a tool-calling loop of up to 5 rounds that reads the law and writes the answer. Set `AGENT_ENABLED=false` in `env` to use the fixed retrieval flow, which also takes over if the agent fails.
 - **Hybrid retrieval**: vector search (Qdrant) + keyword search (BM25 over the same articles), merged with Reciprocal Rank Fusion, then expanded through the Neo4j graph (articles sharing an extracted entity, and neighbouring articles). For an uploaded document, every clause is searched.
 - **Citation check**: every `(law, article)` the answer cites must be in the retrieved context; otherwise the line is stripped, the answer regenerated once, or the raw sources shown.
+- **Answer verifier** (`backend/answer_verifier.py`): an LLM check that each cited article says what the answer uses it for. A misused citation gets one rewrite, then the raw sources are shown; a document review keeps its answer with a warning and low confidence. If the check can't run, the answer goes through unverified.
 - **Laws covered** (`backend/data/laws`): Labor Law 14/2025 (full), Civil Code 131/1948 (full), Penal Code (Articles 1–178), Real Estate Tax Law; Criminal Procedure and Commercial Code only partially.
 
 ## Evaluation
@@ -92,7 +96,7 @@ User → React/Next.js → FastAPI → Pipeline Orchestrator
 python eval/eval_harness.py
 ```
 
-Runs 11 legal questions with known correct articles plus off-topic, prompt-injection and out-of-corpus cases; prints accuracy, citation-check outcomes and latency, and writes `eval/results.json`.
+Runs 11 legal questions with known correct articles plus off-topic, prompt-injection and 4 out-of-corpus cases; prints accuracy, citation-check and verifier outcomes and latency, and writes `eval/results.json`, including each answer.
 
 ## Team
 
